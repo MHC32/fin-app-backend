@@ -1,1 +1,299 @@
-node_modules
+# ===================================================================
+# GITIGNORE - FINAPP HAITI BACKEND
+# ===================================================================
+
+# ===================================================================
+# DEPENDENCIES & NODE MODULES
+# ===================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Package lock files (garder selon votre gestionnaire)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ===================================================================
+# ENVIRONMENT & CONFIGURATION SENSIBLE
+# ===================================================================
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+.env.test
+
+# Configuration secrets
+config/secrets.js
+config/keys.js
+
+# ===================================================================
+# LOGS & MONITORING
+# ===================================================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Logs runtime
+access.log
+error.log
+combined.log
+api.log
+app.log
+
+# ===================================================================
+# BASE DE DONNÉES
+# ===================================================================
+# MongoDB dumps locaux
+dumps/
+backups/
+*.db
+*.sqlite
+*.sqlite3
+
+# MongoDB logs locaux
+mongodb.log
+mongod.log
+
+# ===================================================================
+# UPLOADS & MÉDIAS TEMPORAIRES
+# ===================================================================
+uploads/
+temp/
+tmp/
+public/uploads/
+storage/
+
+# Images et fichiers temporaires
+*.tmp
+*.temp
+*.cache
+
+# ===================================================================
+# TESTS & COVERAGE
+# ===================================================================
+coverage/
+.nyc_output/
+.coverage/
+test-results/
+junit.xml
+
+# Jest
+jest-coverage/
+.jest/
+
+# ===================================================================
+# BUILD & DIST
+# ===================================================================
+build/
+dist/
+out/
+
+# ===================================================================
+# ÉDITEURS & IDE
+# ===================================================================
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# IntelliJ / WebStorm
+.idea/
+*.swp
+*.swo
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+
+# ===================================================================
+# SYSTÈME D'EXPLOITATION
+# ===================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ===================================================================
+# SÉCURITÉ & CERTIFICATS
+# ===================================================================
+# Clés privées
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# JWT secrets
+jwt-private.key
+jwt-public.key
+
+# SSH keys
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# ===================================================================
+# PERFORMANCE & DEBUGGING
+# ===================================================================
+# Profile data
+.clinic/
+clinic_*.html
+
+# Memory dumps
+*.heapsnapshot
+*.cpuprofile
+
+# ===================================================================
+# DÉPLOIEMENT
+# ===================================================================
+# PM2
+.pm2/
+ecosystem.config.js.backup
+
+# Docker
+.dockerignore.backup
+docker-compose.override.yml
+
+# ===================================================================
+# SPÉCIFIQUE FINAPP HAITI
+# ===================================================================
+# Scripts de migration sensibles
+scripts/migration-prod.js
+scripts/reset-prod.js
+
+# Données de test avec informations sensibles
+src/scripts/seedProdData.js
+
+# Backups MongoDB avec données réelles
+backups/prod/
+dumps/prod/
+
+# Certificats SSL locaux
+ssl/
+
+# Configuration production locale
+config/production.local.js
+
+# ===================================================================
+# CLOUDINARY & SERVICES EXTERNES
+# ===================================================================
+# Configuration Cloudinary locale
+cloudinary-config.json
+
+# Fichiers de cache services externes
+.cache/
+.parcel-cache/
+
+# ===================================================================
+# OUTILS DE DÉVELOPPEMENT
+# ===================================================================
+# ESLint cache
+.eslintcache
+
+# Prettier cache
+.prettiercache
+
+# Stylelint cache
+.stylelintcache
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Next.js (si utilisation future)
+.next/
+
+# Nuxt.js (si utilisation future)
+.nuxt/
+
+# ===================================================================
+# MONITORING & ANALYTICS
+# ===================================================================
+# New Relic
+newrelic_agent.log
+
+# Sentry
+.sentryclirc
+
+# ===================================================================
+# DOCUMENTATION TEMPORAIRE
+# ===================================================================
+# Documentation générée automatiquement
+docs/api/generated/
+docs/temp/
+
+# ===================================================================
+# FICHIERS TEMPORAIRES SPÉCIFIQUES
+# ===================================================================
+# Exports temporaires
+exports/
+reports/temp/
+
+# Sessions temporaires
+sessions/
+
+# ===================================================================
+# KEEP FILES (ne pas ignorer)
+# ===================================================================
+# Garder les fichiers example
+!.env.example
+!config/database.example.js
+!docs/README.md
+
+# Garder la structure de dossiers
+!uploads/.gitkeep
+!logs/.gitkeep
+!temp/.gitkeep
