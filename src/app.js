@@ -85,7 +85,7 @@ app.get('/api', (req, res) => {
 app.use('/api/auth', require('./routes/auth'));
 
 // TODO Phase 4: Routes Users  
-// app.use('/api/users', require('./routes/users'));
+app.use('/api/users', require('./routes/users'));
 
 // TODO Phase 4: Routes Accounts
 // app.use('/api/accounts', require('./routes/accounts'));
