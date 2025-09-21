@@ -2,13 +2,13 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const User = require('../models/User');
-const { 
-  generateTokenPair, 
-  verifyAccessToken, 
+const {
+  generateTokenPair,
+  verifyAccessToken,
   verifyRefreshToken,
   extractBearerToken,
   generateTemporaryToken,
-  isTokenExpiringSoon 
+  isTokenExpiringSoon
 } = require('../config/jwt');
 
 /**
@@ -29,7 +29,7 @@ const {
 const registerUser = async (userData, deviceInfo = {}) => {
   try {
     const { email, password, firstName, lastName, phone, region, city } = userData;
-    
+
     // 1. Vérifier si utilisateur existe déjà
     const existingUser = await User.findOne({
       $or: [
@@ -37,33 +37,33 @@ const registerUser = async (userData, deviceInfo = {}) => {
         { phone: phone }
       ]
     });
-    
+
     if (existingUser) {
       throw new Error('Un utilisateur avec cet email ou téléphone existe déjà');
     }
-    
+
     // 2. Hash du mot de passe
     const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-    
+
+
     // 3. Créer utilisateur
     const user = new User({
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       email: email.toLowerCase().trim(),
-      password: hashedPassword,
+      password: password,
       phone: phone.trim(),
       region: region.toLowerCase(),
       city: city.trim(),
       registrationDate: new Date(),
       lastLogin: new Date()
     });
-    
+
     await user.save();
-    
+
     // 4. Générer tokens et session
     const tokens = generateTokenPair(user, deviceInfo);
-    
+
     // 5. Ajouter session à User.js
     await user.addSession({
       sessionId: tokens.sessionId,
@@ -79,20 +79,20 @@ const registerUser = async (userData, deviceInfo = {}) => {
       },
       expiresAt: new Date(tokens.refreshExpiresIn)
     });
-    
+
     // 6. Ajouter refresh token
     await user.addRefreshToken({
       token: tokens.refreshToken,
       expiresAt: new Date(tokens.refreshExpiresIn),
       deviceInfo: deviceInfo
     });
-    
+
     // 7. Retourner données (sans password)
     const userResponse = user.toObject();
     delete userResponse.password;
     delete userResponse.refreshTokens;
     delete userResponse.activeSessions;
-    
+
     return {
       success: true,
       message: 'Utilisateur créé avec succès',
@@ -108,7 +108,7 @@ const registerUser = async (userData, deviceInfo = {}) => {
         deviceId: tokens.deviceId
       }
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur enregistrement: ${error.message}`);
   }
@@ -127,38 +127,38 @@ const registerUser = async (userData, deviceInfo = {}) => {
 const loginUser = async (credentials, deviceInfo = {}) => {
   try {
     const { identifier, password } = credentials; // identifier = email ou phone
-    
+
     // 1. Trouver utilisateur par email ou téléphone
     const user = await User.findByEmailOrPhone(identifier);
-    
+
     if (!user) {
       throw new Error('Email/téléphone ou mot de passe incorrect');
     }
-    
+
     // 2. Vérifier si compte verrouillé
     if (user.isLocked()) {
       throw new Error(`Compte temporairement verrouillé. Réessayez dans ${Math.ceil((user.lockUntil - Date.now()) / (1000 * 60))} minutes.`);
     }
-    
+
     // 3. Vérifier mot de passe
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    
+
     if (!isPasswordValid) {
       // Incrémenter tentatives de connexion
       await user.incLoginAttempts();
       throw new Error('Email/téléphone ou mot de passe incorrect');
     }
-    
+
     // 4. Réinitialiser tentatives de connexion
     user.loginAttempts = 0;
     user.lockUntil = undefined;
-    
+
     // 5. Mettre à jour dernière connexion
     await user.updateLastLogin();
-    
+
     // 6. Générer tokens et session
     const tokens = generateTokenPair(user, deviceInfo);
-    
+
     // 7. Nettoyer anciennes sessions si trop nombreuses (garde 5 max)
     if (user.activeSessions.length >= 5) {
       // Garder les 4 plus récentes + nouvelle
@@ -166,7 +166,7 @@ const loginUser = async (credentials, deviceInfo = {}) => {
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, 4);
     }
-    
+
     // 8. Ajouter nouvelle session
     await user.addSession({
       sessionId: tokens.sessionId,
@@ -182,14 +182,14 @@ const loginUser = async (credentials, deviceInfo = {}) => {
       },
       expiresAt: new Date(tokens.refreshExpiresIn)
     });
-    
+
     // 9. Ajouter refresh token
     await user.addRefreshToken({
       token: tokens.refreshToken,
       expiresAt: new Date(tokens.refreshExpiresIn),
       deviceInfo: deviceInfo
     });
-    
+
     // 10. Retourner données
     const userResponse = user.toObject();
     delete userResponse.password;
@@ -197,7 +197,7 @@ const loginUser = async (credentials, deviceInfo = {}) => {
     delete userResponse.activeSessions;
     delete userResponse.verificationToken;
     delete userResponse.resetPasswordToken;
-    
+
     return {
       success: true,
       message: 'Connexion réussie',
@@ -214,7 +214,7 @@ const loginUser = async (credentials, deviceInfo = {}) => {
         deviceInfo: deviceInfo
       }
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur connexion: ${error.message}`);
   }
@@ -234,56 +234,56 @@ const refreshTokens = async (refreshToken, deviceInfo = {}) => {
   try {
     // 1. Vérifier format et validité refresh token
     const verification = verifyRefreshToken(refreshToken);
-    
+
     if (!verification.isValid) {
       throw new Error(verification.error || 'Refresh token invalide');
     }
-    
+
     const { userId, sessionId } = verification.payload;
-    
+
     // 2. Trouver utilisateur avec ce refresh token
     const user = await User.findByRefreshToken(refreshToken);
-    
+
     if (!user) {
       throw new Error('Refresh token non trouvé ou expiré');
     }
-    
+
     // 3. Vérifier que l'utilisateur correspond
     if (user._id.toString() !== userId) {
       throw new Error('Refresh token invalide pour cet utilisateur');
     }
-    
+
     // 4. Trouver la session correspondante
     const session = user.activeSessions.find(s => s.sessionId === sessionId);
-    
+
     if (!session || !session.isActive) {
       throw new Error('Session invalide ou expirée');
     }
-    
+
     // 5. Générer nouveaux tokens
     const newTokens = generateTokenPair(user, deviceInfo);
-    
+
     // 6. Mettre à jour session existante
     session.accessToken = newTokens.accessToken;
     session.refreshToken = newTokens.refreshToken;
     session.expiresAt = new Date(newTokens.refreshExpiresIn);
     session.lastActivity = new Date();
-    
+
     // 7. Invalider ancien refresh token et ajouter nouveau
     user.refreshTokens.forEach(rt => {
       if (rt.token === refreshToken) {
         rt.isActive = false;
       }
     });
-    
+
     await user.addRefreshToken({
       token: newTokens.refreshToken,
       expiresAt: new Date(newTokens.refreshExpiresIn),
       deviceInfo: deviceInfo
     });
-    
+
     await user.save();
-    
+
     return {
       success: true,
       message: 'Tokens renouvelés avec succès',
@@ -298,7 +298,7 @@ const refreshTokens = async (refreshToken, deviceInfo = {}) => {
         deviceId: newTokens.deviceId
       }
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur refresh token: ${error.message}`);
   }
@@ -317,19 +317,19 @@ const refreshTokens = async (refreshToken, deviceInfo = {}) => {
 const logoutUser = async (userId, sessionId) => {
   try {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw new Error('Utilisateur non trouvé');
     }
-    
+
     // Supprimer session spécifique
     await user.removeSession(sessionId);
-    
+
     return {
       success: true,
       message: 'Déconnexion réussie'
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur déconnexion: ${error.message}`);
   }
@@ -343,22 +343,22 @@ const logoutUser = async (userId, sessionId) => {
 const logoutAllSessions = async (userId) => {
   try {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw new Error('Utilisateur non trouvé');
     }
-    
+
     // Invalider toutes les sessions et refresh tokens
     user.activeSessions = [];
     user.refreshTokens = user.refreshTokens.map(rt => ({ ...rt, isActive: false }));
-    
+
     await user.save();
-    
+
     return {
       success: true,
       message: 'Déconnexion de toutes les sessions réussie'
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur déconnexion globale: ${error.message}`);
   }
@@ -377,37 +377,37 @@ const validateAccessToken = async (authHeader) => {
   try {
     // 1. Extraire token du header Bearer
     const token = extractBearerToken(authHeader);
-    
+
     if (!token) {
       throw new Error('Token d\'authentification requis');
     }
-    
+
     // 2. Vérifier token JWT
     const verification = verifyAccessToken(token);
-    
+
     if (!verification.isValid) {
       throw new Error(verification.error || 'Token invalide');
     }
-    
+
     const { userId, sessionId } = verification.payload;
-    
+
     // 3. Trouver utilisateur
     const user = await User.findById(userId);
-    
+
     if (!user || !user.isActive) {
       throw new Error('Utilisateur non trouvé ou inactif');
     }
-    
+
     // 4. Vérifier session active
     const session = user.activeSessions.find(s => s.sessionId === sessionId && s.isActive);
-    
+
     if (!session) {
       throw new Error('Session invalide ou expirée');
     }
-    
+
     // 5. Vérifier si token expire bientôt
     const expiringSoon = isTokenExpiringSoon(verification.payload, 5);
-    
+
     return {
       success: true,
       user: {
@@ -429,7 +429,7 @@ const validateAccessToken = async (authHeader) => {
         expiringSoon: expiringSoon
       }
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur validation token: ${error.message}`);
   }
@@ -445,15 +445,15 @@ const checkUserPermissions = (user, requiredRoles) => {
   if (!user || !user.role) {
     return false;
   }
-  
+
   if (typeof requiredRoles === 'string') {
     return user.role === requiredRoles;
   }
-  
+
   if (Array.isArray(requiredRoles)) {
     return requiredRoles.includes(user.role);
   }
-  
+
   return false;
 };
 
@@ -469,7 +469,7 @@ const checkUserPermissions = (user, requiredRoles) => {
 const generatePasswordResetToken = async (email) => {
   try {
     const user = await User.findOne({ email: email.toLowerCase() });
-    
+
     if (!user) {
       // Ne pas révéler si email existe
       return {
@@ -477,18 +477,18 @@ const generatePasswordResetToken = async (email) => {
         message: 'Si cet email existe, un lien de réinitialisation a été envoyé'
       };
     }
-    
+
     // Générer token reset
     const resetToken = user.generateResetPasswordToken();
     await user.save();
-    
+
     // Générer JWT temporaire pour sécurité supplémentaire
     const tempToken = generateTemporaryToken({
       userId: user._id.toString(),
       email: user.email,
       type: 'password_reset'
     }, '1h');
-    
+
     return {
       success: true,
       resetToken: resetToken,
@@ -500,7 +500,7 @@ const generatePasswordResetToken = async (email) => {
         firstName: user.firstName
       }
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur génération token reset: ${error.message}`);
   }
@@ -518,31 +518,31 @@ const resetPassword = async (resetToken, newPassword) => {
       resetPasswordToken: resetToken,
       resetPasswordExpires: { $gt: Date.now() }
     });
-    
+
     if (!user) {
       throw new Error('Token de réinitialisation invalide ou expiré');
     }
-    
+
     // Hash nouveau mot de passe
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-    
+
     // Mettre à jour utilisateur
     user.password = hashedPassword;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
-    
+
     // Invalider toutes les sessions existantes pour sécurité
     user.activeSessions = [];
     user.refreshTokens = user.refreshTokens.map(rt => ({ ...rt, isActive: false }));
-    
+
     await user.save();
-    
+
     return {
       success: true,
       message: 'Mot de passe réinitialisé avec succès'
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur réinitialisation mot de passe: ${error.message}`);
   }
@@ -558,30 +558,30 @@ const resetPassword = async (resetToken, newPassword) => {
 const changePassword = async (userId, currentPassword, newPassword) => {
   try {
     const user = await User.findById(userId).select('+password');
-    
+
     if (!user) {
       throw new Error('Utilisateur non trouvé');
     }
-    
+
     // Vérifier mot de passe actuel
     const isCurrentValid = await bcrypt.compare(currentPassword, user.password);
-    
+
     if (!isCurrentValid) {
       throw new Error('Mot de passe actuel incorrect');
     }
-    
+
     // Hash nouveau mot de passe
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-    
+
     user.password = hashedPassword;
     await user.save();
-    
+
     return {
       success: true,
       message: 'Mot de passe modifié avec succès'
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur changement mot de passe: ${error.message}`);
   }
@@ -599,11 +599,11 @@ const changePassword = async (userId, currentPassword, newPassword) => {
 const getUserSessions = async (userId) => {
   try {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw new Error('Utilisateur non trouvé');
     }
-    
+
     const activeSessions = user.activeSessions
       .filter(session => session.isActive && session.expiresAt > new Date())
       .map(session => ({
@@ -615,13 +615,13 @@ const getUserSessions = async (userId) => {
         isCurrent: false // À définir dans le controller
       }))
       .sort((a, b) => b.lastActivity - a.lastActivity);
-    
+
     return {
       success: true,
       sessions: activeSessions,
       totalSessions: activeSessions.length
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur récupération sessions: ${error.message}`);
   }
@@ -635,26 +635,26 @@ const getUserSessions = async (userId) => {
 const cleanExpiredSessions = async (userId) => {
   try {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw new Error('Utilisateur non trouvé');
     }
-    
+
     const before = user.activeSessions.length;
-    
+
     // Nettoyer sessions et refresh tokens expirés
     await user.cleanExpiredSessions();
-    
+
     const after = user.activeSessions.length;
     const cleaned = before - after;
-    
+
     return {
       success: true,
       message: `${cleaned} sessions expirées supprimées`,
       sessionsRemoved: cleaned,
       activeSessions: after
     };
-    
+
   } catch (error) {
     throw new Error(`Erreur nettoyage sessions: ${error.message}`);
   }
@@ -670,16 +670,16 @@ module.exports = {
   refreshTokens,
   logoutUser,
   logoutAllSessions,
-  
+
   // Validation et permissions
   validateAccessToken,
   checkUserPermissions,
-  
+
   // Gestion mots de passe
   generatePasswordResetToken,
   resetPassword,
   changePassword,
-  
+
   // Gestion sessions
   getUserSessions,
   cleanExpiredSessions

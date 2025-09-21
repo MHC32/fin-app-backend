@@ -383,6 +383,11 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
   }
 };
 
+// ✅ FIX: Vérifier si le compte est verrouillé
+userSchema.methods.isLocked = function() {
+  return !!(this.lockUntil && this.lockUntil > Date.now());
+};
+
 // Incrémenter les tentatives de connexion
 userSchema.methods.incLoginAttempts = function() {
   // Si on a un verrou et qu'il a expiré, reset

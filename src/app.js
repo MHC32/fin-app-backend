@@ -82,7 +82,7 @@ app.get('/api', (req, res) => {
 // =============================================================================
 
 // TODO Phase 3: Routes Auth
-// app.use('/api/auth', require('./routes/auth'));
+app.use('/api/auth', require('./routes/auth'));
 
 // TODO Phase 4: Routes Users  
 // app.use('/api/users', require('./routes/users'));
