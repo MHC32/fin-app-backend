@@ -88,10 +88,10 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 
 // TODO Phase 4: Routes Accounts
-// app.use('/api/accounts', require('./routes/accounts'));
+app.use('/api/accounts', require('./routes/accounts'));
 
 // TODO Phase 5: Routes Transactions
-// app.use('/api/transactions', require('./routes/transactions'));
+app.use('/api/transactions', require('./routes/transactions'));
 
 // TODO Phase 5: Routes Budgets
 // app.use('/api/budgets', require('./routes/budgets'));
