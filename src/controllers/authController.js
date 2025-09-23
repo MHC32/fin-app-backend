@@ -5,6 +5,12 @@ const authService = require('../services/authService');
 /**
  * Controllers d'authentification utilisant authService.js
  * Gestion complète : register, login, refresh, logout, password management
+ * 
+ * CORRECTIONS APPORTÉES:
+ * - Appels authService avec paramètres corrects (pas d'objets imbriqués)
+ * - Gestion d'erreur robuste avec success/failure
+ * - Validation express-validator intégrée
+ * - Headers sécurisés et cookies
  */
 
 // ===================================================================
@@ -272,6 +278,7 @@ const changePasswordValidation = [
  */
 const register = async (req, res) => {
   try {
+    // 1. Validation d'entrée déjà faite par middleware
     const { 
       firstName, 
       lastName, 
@@ -283,10 +290,10 @@ const register = async (req, res) => {
       agreeToTerms 
     } = req.body;
     
-    // Extraire infos device
+    // 2. Extraire infos device
     const deviceInfo = extractDeviceInfo(req);
     
-    // Appeler service d'authentification
+    // 3. Appeler service d'authentification
     const result = await authService.registerUser({
       firstName,
       lastName,
@@ -297,17 +304,30 @@ const register = async (req, res) => {
       city
     }, deviceInfo);
     
-    // Set refresh token en cookie sécurisé (optionnel)
-    res.cookie('refreshToken', result.tokens.refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 jours
-    });
+    // 4. Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'register_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
     
+    // 5. Set refresh token en cookie sécurisé
+    if (result.tokens?.refreshToken) {
+      res.cookie('refreshToken', result.tokens.refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 jours
+      });
+    }
+    
+    // 6. Réponse succès
     res.status(201).json({
       success: true,
-      message: 'Compte créé avec succès! Bienvenue dans FinApp Haiti! 🇭🇹',
+      message: `Bienvenue dans FinApp Haiti! 🇭🇹`,
       data: {
         user: result.user,
         tokens: {
@@ -323,34 +343,42 @@ const register = async (req, res) => {
   } catch (error) {
     console.error('❌ Erreur register:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'register_failed',
+      message: 'Erreur interne lors de l\'inscription',
+      error: 'register_internal_error',
       timestamp: new Date().toISOString()
     });
   }
 };
 
 /**
- * Connexion utilisateur
+ * Connexion utilisateur - CORRECTION PRINCIPALE
  * POST /api/auth/login
  */
 const login = async (req, res) => {
   try {
+    // 1. Validation d'entrée déjà faite par middleware
     const { identifier, password, rememberMe = false } = req.body;
     
-    // Extraire infos device
+    // 2. Extraire infos device
     const deviceInfo = extractDeviceInfo(req);
     
-    // Appeler service d'authentification
-    const result = await authService.loginUser({
-      identifier,
-      password
-    }, deviceInfo);
+    // 3. Appeler service d'authentification - CORRECTION ICI
+    const result = await authService.loginUser(identifier, password, deviceInfo);
     
-    // Set refresh token en cookie si remember me
-    if (rememberMe) {
+    // 4. Vérifier résultat du service
+    if (!result.success) {
+      return res.status(401).json({
+        success: false,
+        message: result.error,
+        error: 'login_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // 5. Set refresh token en cookie si remember me
+    if (rememberMe && result.tokens?.refreshToken) {
       res.cookie('refreshToken', result.tokens.refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -359,9 +387,10 @@ const login = async (req, res) => {
       });
     }
     
+    // 6. Réponse succès
     res.status(200).json({
       success: true,
-      message: `Bon retour ${result.user.firstName}! 👋`,
+      message: `Bon retour ${result.user?.firstName || 'utilisateur'}! 👋`,
       data: {
         user: result.user,
         tokens: {
@@ -377,69 +406,44 @@ const login = async (req, res) => {
   } catch (error) {
     console.error('❌ Erreur login:', error.message);
     
-    // Distinction erreurs pour sécurité
-    const isCredentialError = error.message.includes('mot de passe') || 
-                              error.message.includes('email') ||
-                              error.message.includes('téléphone');
-    
-    const statusCode = error.message.includes('verrouillé') ? 429 : 401;
-    
-    res.status(statusCode).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: isCredentialError ? 'invalid_credentials' : 'login_failed',
+      message: 'Erreur interne lors de la connexion',
+      error: 'login_internal_error',
       timestamp: new Date().toISOString()
     });
   }
 };
 
 /**
- * Renouveler access token
+ * Refresh token
  * POST /api/auth/refresh
  */
 const refreshToken = async (req, res) => {
   try {
-    let refreshToken = req.body.refreshToken;
+    // 1. Validation d'entrée déjà faite par middleware
+    const { refreshToken } = req.body;
+    const deviceInfo = extractDeviceInfo(req);
     
-    // Fallback sur cookie si pas dans body
-    if (!refreshToken) {
-      refreshToken = req.cookies.refreshToken;
-    }
+    // 2. Appeler service refresh
+    const result = await authService.refreshTokens(refreshToken, deviceInfo);
     
-    if (!refreshToken) {
+    // 3. Vérifier résultat du service
+    if (!result.success) {
       return res.status(401).json({
         success: false,
-        message: 'Refresh token requis',
-        error: 'no_refresh_token',
+        message: result.error,
+        error: 'refresh_failed',
         timestamp: new Date().toISOString()
       });
     }
     
-    // Extraire infos device
-    const deviceInfo = extractDeviceInfo(req);
-    
-    // Appeler service refresh
-    const result = await authService.refreshTokens(refreshToken, deviceInfo);
-    
-    // Mettre à jour cookie si existant
-    if (req.cookies.refreshToken) {
-      res.cookie('refreshToken', result.tokens.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000
-      });
-    }
-    
+    // 4. Réponse succès
     res.status(200).json({
       success: true,
-      message: 'Tokens renouvelés avec succès',
+      message: 'Token renouvelé avec succès',
       data: {
-        tokens: {
-          accessToken: result.tokens.accessToken,
-          tokenType: result.tokens.tokenType,
-          expiresIn: result.tokens.expiresIn
-        },
+        tokens: result.tokens,
         session: result.session
       },
       timestamp: new Date().toISOString()
@@ -448,79 +452,94 @@ const refreshToken = async (req, res) => {
   } catch (error) {
     console.error('❌ Erreur refresh token:', error.message);
     
-    // Supprimer cookie invalide
-    res.clearCookie('refreshToken');
-    
-    res.status(401).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'refresh_failed',
+      message: 'Erreur interne lors du renouvellement',
+      error: 'refresh_internal_error',
       timestamp: new Date().toISOString()
     });
   }
 };
 
 /**
- * Déconnexion utilisateur (session courante)
+ * Déconnexion session courante
  * POST /api/auth/logout
  */
 const logout = async (req, res) => {
   try {
     const { userId, sessionId } = req.user; // Ajouté par middleware auth
     
-    // Appeler service logout
+    // Appeler service déconnexion
     const result = await authService.logoutUser(userId, sessionId);
     
-    // Supprimer cookie refresh token
+    // Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'logout_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Supprimer refresh token cookie
     res.clearCookie('refreshToken');
     
     res.status(200).json({
       success: true,
       message: 'Déconnexion réussie. À bientôt! 👋',
-      data: result,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error('❌ Erreur logout:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'logout_failed',
+      message: 'Erreur interne lors de la déconnexion',
+      error: 'logout_internal_error',
       timestamp: new Date().toISOString()
     });
   }
 };
 
 /**
- * Déconnexion de toutes les sessions
+ * Déconnexion toutes sessions
  * POST /api/auth/logout-all
  */
 const logoutAll = async (req, res) => {
   try {
     const { userId } = req.user; // Ajouté par middleware auth
     
-    // Appeler service logout global
+    // Appeler service déconnexion globale
     const result = await authService.logoutAllSessions(userId);
     
-    // Supprimer cookie refresh token
+    // Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'logout_all_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Supprimer refresh token cookie
     res.clearCookie('refreshToken');
     
     res.status(200).json({
       success: true,
-      message: 'Déconnexion de toutes les sessions réussie',
-      data: result,
+      message: 'Déconnexion de tous les appareils réussie',
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error('❌ Erreur logout all:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'logout_all_failed',
+      message: 'Erreur interne lors de la déconnexion globale',
+      error: 'logout_all_internal_error',
       timestamp: new Date().toISOString()
     });
   }
@@ -531,62 +550,75 @@ const logoutAll = async (req, res) => {
 // ===================================================================
 
 /**
- * Demander reset mot de passe
+ * Demander réinitialisation mot de passe
  * POST /api/auth/forgot-password
  */
 const forgotPassword = async (req, res) => {
   try {
+    // 1. Validation d'entrée déjà faite par middleware
     const { email } = req.body;
     
-    // Appeler service reset password
+    // 2. Appeler service reset password
     const result = await authService.generatePasswordResetToken(email);
     
-    // TODO: Envoyer email avec token reset (service email)
-    // await emailService.sendPasswordResetEmail(result);
-    
+    // 3. Toujours répondre succès pour sécurité (ne pas révéler si email existe)
     res.status(200).json({
       success: true,
       message: 'Si cet email existe, un lien de réinitialisation a été envoyé',
       timestamp: new Date().toISOString()
     });
     
+    // 4. TODO: Envoyer email si result.success et result.resetToken existe
+    // emailService.sendPasswordReset(result.email, result.resetToken);
+    
   } catch (error) {
     console.error('❌ Erreur forgot password:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: 'Erreur lors de la demande de réinitialisation',
-      error: 'forgot_password_failed',
+      message: 'Erreur interne lors de la demande de réinitialisation',
+      error: 'forgot_password_internal_error',
       timestamp: new Date().toISOString()
     });
   }
 };
 
 /**
- * Réinitialiser mot de passe
+ * Réinitialiser mot de passe avec token
  * POST /api/auth/reset-password
  */
 const resetPassword = async (req, res) => {
   try {
+    // 1. Validation d'entrée déjà faite par middleware
     const { resetToken, newPassword } = req.body;
     
-    // Appeler service reset
+    // 2. Appeler service reset password
     const result = await authService.resetPassword(resetToken, newPassword);
     
+    // 3. Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'reset_password_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // 4. Réponse succès
     res.status(200).json({
       success: true,
       message: 'Mot de passe réinitialisé avec succès',
-      data: result,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error('❌ Erreur reset password:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'reset_password_failed',
+      message: 'Erreur interne lors de la réinitialisation',
+      error: 'reset_password_internal_error',
       timestamp: new Date().toISOString()
     });
   }
@@ -598,26 +630,37 @@ const resetPassword = async (req, res) => {
  */
 const changePassword = async (req, res) => {
   try {
-    const { userId } = req.user; // Ajouté par middleware auth
+    // 1. Validation d'entrée déjà faite par middleware
     const { currentPassword, newPassword } = req.body;
+    const { userId } = req.user; // Ajouté par middleware auth
     
-    // Appeler service changement
+    // 2. Appeler service change password
     const result = await authService.changePassword(userId, currentPassword, newPassword);
     
+    // 3. Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'change_password_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // 4. Réponse succès
     res.status(200).json({
       success: true,
       message: 'Mot de passe modifié avec succès',
-      data: result,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error('❌ Erreur change password:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'change_password_failed',
+      message: 'Erreur interne lors du changement de mot de passe',
+      error: 'change_password_internal_error',
       timestamp: new Date().toISOString()
     });
   }
@@ -638,6 +681,16 @@ const getSessions = async (req, res) => {
     // Appeler service sessions
     const result = await authService.getUserSessions(userId);
     
+    // Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'get_sessions_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     // Marquer session courante
     const sessions = result.sessions.map(session => ({
       ...session,
@@ -657,10 +710,10 @@ const getSessions = async (req, res) => {
   } catch (error) {
     console.error('❌ Erreur get sessions:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'get_sessions_failed',
+      message: 'Erreur interne lors de la récupération des sessions',
+      error: 'get_sessions_internal_error',
       timestamp: new Date().toISOString()
     });
   }
@@ -677,6 +730,16 @@ const cleanupSessions = async (req, res) => {
     // Appeler service nettoyage
     const result = await authService.cleanExpiredSessions(userId);
     
+    // Vérifier résultat du service
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+        error: 'cleanup_sessions_failed',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     res.status(200).json({
       success: true,
       message: result.message,
@@ -690,10 +753,85 @@ const cleanupSessions = async (req, res) => {
   } catch (error) {
     console.error('❌ Erreur cleanup sessions:', error.message);
     
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
-      error: 'cleanup_sessions_failed',
+      message: 'Erreur interne lors du nettoyage des sessions',
+      error: 'cleanup_sessions_internal_error',
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Profil utilisateur depuis token
+ * GET /api/auth/me
+ */
+const getMe = async (req, res) => {
+  try {
+    // Utilisateur déjà injecté par middleware auth
+    res.status(200).json({
+      success: true,
+      message: 'Profil utilisateur récupéré',
+      data: {
+        user: {
+          userId: req.user.userId,
+          email: req.user.email,
+          firstName: req.user.firstName,
+          lastName: req.user.lastName,
+          role: req.user.role,
+          region: req.user.region,
+          isVerified: req.user.isVerified
+        },
+        authenticated: !req.user,
+        session: req.user ? {
+          sessionId: req.user.sessionId,
+          tokenExpiringSoon: req.user.tokenExpiringSoon
+        } : null
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Erreur récupération profil utilisateur',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Vérifier validité token
+ * GET /api/auth/verify-token
+ */
+const verifyToken = async (req, res) => {
+  try {
+    res.status(200).json({
+      success: true,
+      message: 'Token valide',
+      data: {
+        valid: true,
+        user: {
+          userId: req.user.userId,
+          email: req.user.email,
+          firstName: req.user.firstName,
+          lastName: req.user.lastName,
+          role: req.user.role,
+          isVerified: req.user.isVerified
+        },
+        session: {
+          sessionId: req.user.sessionId,
+          lastActivity: req.user.lastActivity
+        },
+        tokenExpiringSoon: req.user.tokenExpiringSoon || false
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Erreur vérification token',
+      error: error.message,
       timestamp: new Date().toISOString()
     });
   }
@@ -722,7 +860,9 @@ const healthCheck = async (req, res) => {
           resetPassword: 'POST /api/auth/reset-password',
           changePassword: 'POST /api/auth/change-password',
           sessions: 'GET /api/auth/sessions',
-          cleanup: 'DELETE /api/auth/sessions/cleanup'
+          cleanup: 'DELETE /api/auth/sessions/cleanup',
+          me: 'GET /api/auth/me',
+          verifyToken: 'GET /api/auth/verify-token'
         }
       }
     });
@@ -739,14 +879,14 @@ const healthCheck = async (req, res) => {
 // EXPORTS
 // ===================================================================
 module.exports = {
-  // Controllers principaux
+  // Controllers principaux avec validation
   register: [registerValidation, handleValidationErrors, register],
   login: [loginValidation, handleValidationErrors, login],
   refreshToken: [refreshValidation, handleValidationErrors, refreshToken],
   logout,
   logoutAll,
   
-  // Gestion mots de passe
+  // Gestion mots de passe avec validation
   forgotPassword: [resetPasswordValidation, handleValidationErrors, forgotPassword],
   resetPassword: [newPasswordValidation, handleValidationErrors, resetPassword],
   changePassword: [changePasswordValidation, handleValidationErrors, changePassword],
@@ -754,11 +894,22 @@ module.exports = {
   // Gestion sessions
   getSessions,
   cleanupSessions,
+  getMe,
+  verifyToken,
   
   // Utilitaires
   healthCheck,
   
   // Middleware validation (pour usage externe)
   handleValidationErrors,
-  extractDeviceInfo
+  extractDeviceInfo,
+  formatValidationErrors,
+  
+  // Validations (pour usage externe dans routes)
+  registerValidation,
+  loginValidation,
+  refreshValidation,
+  resetPasswordValidation,
+  newPasswordValidation,
+  changePasswordValidation
 };

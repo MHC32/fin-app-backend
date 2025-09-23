@@ -1,39 +1,59 @@
 // src/middleware/auth.js - Middleware d'authentification FinApp Haiti
 const rateLimit = require('express-rate-limit');
-const authService = require('../services/authService');
-const { extractBearerToken, isTokenExpiringSoon } = require('../config/jwt');
+const authService = require('../services/authService'); // IMPORT CRITIQUE AJOUTÉ
 
 /**
- * Middleware d'authentification intégré avec authService + User.js sessions
- * Protection routes + injection utilisateur + permissions + rate limiting
+ * Middleware d'authentification FinApp Haiti
+ * 
+ * Ce fichier contient les middleware d'authentification et de permissions
+ * pour sécuriser les routes API.
+ * 
+ * Dépendances:
+ * - authService pour validation JWT + sessions
+ * - express-rate-limit pour limitations requêtes
+ * - User.js modèle pour sessions multi-device
+ * 
+ * Middleware principaux:
+ * - authenticate: authentification obligatoire
+ * - optionalAuth: authentification optionnelle
+ * - requireRole: vérification rôles
+ * - requireVerified: compte vérifié requis
  */
 
 // ===================================================================
-// CONFIGURATIONS RATE LIMITING
+// UTILITAIRES
 // ===================================================================
 
 /**
- * Rate limiter général pour routes protégées
+ * Extraire token Bearer de l'Authorization header
+ * @param {string} authHeader - Header Authorization
+ * @returns {string|null} - Token extrait ou null
+ */
+const extractBearerToken = (authHeader) => {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  return authHeader.slice(7); // Retirer "Bearer "
+};
+
+// ===================================================================
+// RATE LIMITING CONFIGURATIONS
+// ===================================================================
+
+/**
+ * Rate limiter général pour authentification
  */
 const generalAuthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // 1000 requêtes par utilisateur par fenêtre
+  max: 100, // 100 requêtes par IP par fenêtre
   message: {
     success: false,
-    message: 'Trop de requêtes. Réessayez dans 15 minutes.',
-    error: 'rate_limit_exceeded',
+    message: 'Trop de requêtes d\'authentification. Réessayez dans 15 minutes.',
+    error: 'auth_rate_limit_exceeded',
     retryAfter: '15 minutes'
   },
   standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    // Rate limit par utilisateur si authentifié, sinon par IP
-    return req.user?.userId || req.ip;
-  },
-  skip: (req) => {
-    // Skip rate limiting pour health checks
-    return req.path === '/api/health' || req.path === '/api/auth/health';
-  }
+  legacyHeaders: false
 });
 
 /**
@@ -41,10 +61,10 @@ const generalAuthLimiter = rateLimit({
  */
 const strictAuthLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 heure
-  max: 50, // 50 requêtes par utilisateur par heure
+  max: 20, // 20 requêtes par IP par heure
   message: {
     success: false,
-    message: 'Limite de requêtes atteinte pour cette opération sensible.',
+    message: 'Trop de requêtes sensibles. Réessayez dans 1 heure.',
     error: 'strict_rate_limit_exceeded',
     retryAfter: '1 hour'
   },
@@ -52,15 +72,16 @@ const strictAuthLimiter = rateLimit({
 });
 
 /**
- * Rate limiter pour actions admin
+ * Rate limiter admin pour opérations administratives
  */
 const adminLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 100, // 100 requêtes admin par 5 minutes
+  max: 50, // 50 opérations admin par fenêtre
   message: {
     success: false,
-    message: 'Limite admin atteinte. Réessayez dans 5 minutes.',
-    error: 'admin_rate_limit_exceeded'
+    message: 'Trop d\'opérations administratives. Réessayez dans 5 minutes.',
+    error: 'admin_rate_limit_exceeded',
+    retryAfter: '5 minutes'
   },
   keyGenerator: (req) => req.user?.userId || req.ip
 });
@@ -155,11 +176,13 @@ const authenticate = async (req, res, next) => {
     
   } catch (error) {
     console.error('❌ Erreur middleware auth:', error.message);
+    console.error('❌ Stack trace:', error.stack); // Debug supplémentaire
     
     return res.status(500).json({
       success: false,
       message: 'Erreur interne d\'authentification',
       error: 'auth_internal_error',
+      debug: process.env.NODE_ENV === 'development' ? error.message : undefined,
       timestamp: new Date().toISOString()
     });
   }
@@ -292,7 +315,7 @@ const requireVerified = (req, res, next) => {
       success: false,
       message: 'Compte non vérifié. Vérifiez votre email.',
       error: 'account_not_verified',
-      hint: 'Consultez votre boîte email pour le lien de vérification',
+      userId: req.user.userId,
       timestamp: new Date().toISOString()
     });
   }
@@ -301,12 +324,12 @@ const requireVerified = (req, res, next) => {
 };
 
 /**
- * Middleware vérification ownership ressource
- * Vérifie que l'utilisateur est propriétaire de la ressource
- * @param {string} paramName - Nom du paramètre contenant l'ID propriétaire
+ * Middleware vérification propriété ressource
+ * Vérifie que l'utilisateur peut accéder à ses propres données uniquement
+ * @param {string} userIdParam - Nom du paramètre contenant l'ID utilisateur
  * @returns {Function} - Middleware Express
  */
-const requireOwnership = (paramName = 'userId') => {
+const requireOwnership = (userIdParam = 'userId') => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
@@ -317,23 +340,19 @@ const requireOwnership = (paramName = 'userId') => {
       });
     }
     
-    const resourceOwnerId = req.params[paramName] || req.body[paramName];
+    const resourceUserId = req.params[userIdParam] || req.body[userIdParam] || req.query[userIdParam];
     
-    if (!resourceOwnerId) {
-      return res.status(400).json({
-        success: false,
-        message: `Paramètre ${paramName} manquant`,
-        error: 'missing_owner_id',
-        timestamp: new Date().toISOString()
-      });
+    // Admin peut accéder à tout
+    if (req.user.role === 'admin') {
+      return next();
     }
     
-    // Vérifier ownership (admin peut accéder à tout)
-    if (req.user.userId !== resourceOwnerId && req.user.role !== 'admin') {
+    // Utilisateur peut accéder uniquement à ses données
+    if (resourceUserId && resourceUserId !== req.user.userId) {
       return res.status(403).json({
         success: false,
-        message: 'Accès refusé. Vous ne pouvez accéder qu\'à vos propres ressources.',
-        error: 'access_denied',
+        message: 'Accès refusé. Vous ne pouvez accéder qu\'à vos propres données.',
+        error: 'resource_access_denied',
         timestamp: new Date().toISOString()
       });
     }
@@ -347,31 +366,33 @@ const requireOwnership = (paramName = 'userId') => {
 // ===================================================================
 
 /**
- * Middleware détection session suspecte
- * Vérifie changements device/IP suspects
+ * Middleware détection sessions suspectes
+ * Vérifie les changements d'IP ou device suspects
  * @param {Object} req - Requête Express
  * @param {Object} res - Réponse Express
  * @param {Function} next - Next middleware
  */
 const detectSuspiciousSession = (req, res, next) => {
-  if (!req.user) {
-    return next();
-  }
-  
   try {
-    const currentIP = req.ip || req.connection.remoteAddress;
-    const sessionIP = req.user.deviceInfo?.ip;
-    
-    // Vérifier IP différente (basique)
-    if (sessionIP && currentIP !== sessionIP) {
-      console.warn(`⚠️ IP change détectée pour user ${req.user.userId}: ${sessionIP} → ${currentIP}`);
-      
-      // Headers d'alerte pour frontend
-      res.set('X-Security-Alert', 'ip_change_detected');
-      res.set('X-Security-Recommendation', 'verify_session');
+    if (!req.user || !req.user.deviceInfo) {
+      return next();
     }
     
-    // TODO: Autres vérifications (User-Agent, geolocation, etc.)
+    const currentIP = req.ip;
+    const currentUserAgent = req.get('User-Agent');
+    const sessionDeviceInfo = req.user.deviceInfo;
+    
+    // Vérifier changement d'IP (warning seulement)
+    if (sessionDeviceInfo.ip && sessionDeviceInfo.ip !== currentIP) {
+      console.warn(`⚠️ IP change detected: User ${req.user.userId} | Session: ${sessionDeviceInfo.ip} → Current: ${currentIP}`);
+      res.set('X-IP-Change-Detected', 'true');
+    }
+    
+    // Vérifier changement User-Agent (warning seulement)
+    if (sessionDeviceInfo.userAgent && sessionDeviceInfo.userAgent !== currentUserAgent) {
+      console.warn(`⚠️ User-Agent change detected: User ${req.user.userId}`);
+      res.set('X-User-Agent-Change-Detected', 'true');
+    }
     
     next();
     
@@ -479,24 +500,21 @@ const trackPerformance = (req, res, next) => {
 };
 
 // ===================================================================
-// COMBINAISONS MIDDLEWARE COURANTES
+// MIDDLEWARE COMPOSITIONS (STANDARD/STRICT/ADMIN)
 // ===================================================================
 
 /**
- * Stack authentification standard
- * Auth + rate limiting + activity logging
+ * Authentification standard (la plupart des routes)
  */
 const standardAuth = [
   authenticate,
   generalAuthLimiter,
   detectSuspiciousSession,
   logUserActivity(),
-  trackPerformance
 ];
 
 /**
- * Stack authentification stricte
- * Auth + rate limiting strict + verification + logging
+ * Authentification stricte (opérations sensibles)
  */
 const strictAuth = [
   authenticate,
@@ -504,12 +522,10 @@ const strictAuth = [
   requireVerified,
   detectSuspiciousSession,
   logUserActivity(['POST', 'PUT', 'DELETE']),
-  trackPerformance
 ];
 
 /**
- * Stack authentification admin
- * Auth + admin role + rate limiting + logging complet
+ * Authentification admin (opérations administratives)
  */
 const adminAuth = [
   authenticate,
@@ -517,22 +533,20 @@ const adminAuth = [
   adminLimiter,
   detectSuspiciousSession,
   logUserActivity(),
-  trackPerformance
 ];
 
 /**
- * Stack authentification optionnelle
- * Auth optionnel + rate limiting léger
+ * Authentification optionnelle avec protection de base
  */
 const optionalAuthStack = [
   optionalAuth,
   generalAuthLimiter,
-  trackPerformance
 ];
 
 // ===================================================================
-// EXPORTS
+// EXPORT
 // ===================================================================
+
 module.exports = {
   // Middleware principaux
   authenticate,
@@ -554,11 +568,13 @@ module.exports = {
   
   // Logging et analytics
   logUserActivity,
-  trackPerformance,
   
   // Stacks préconfigurées
   standardAuth,
   strictAuth,
   adminAuth,
-  optionalAuthStack
+  optionalAuthStack,
+  
+  // Utilitaires
+  extractBearerToken
 };

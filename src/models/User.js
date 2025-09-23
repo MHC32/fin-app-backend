@@ -448,12 +448,19 @@ userSchema.methods.updateLastLogin = function() {
 // ===================================================================
 
 // Ajouter une nouvelle session
+// ===================================================================
+// MÉTHODES GESTION SESSIONS - CORRECTED
+// ===================================================================
+
+// Ajouter une nouvelle session - FIXÉ
 userSchema.methods.addSession = function(sessionData) {
   const crypto = require('crypto');
-  const sessionId = crypto.randomUUID();
+  
+  // CORRECTION: Utiliser le sessionId fourni OU générer si absent
+  const sessionId = sessionData.sessionId || crypto.randomUUID();
   
   const session = {
-    sessionId,
+    sessionId, // Maintenant utilise le bon sessionId
     accessToken: sessionData.accessToken,
     refreshToken: sessionData.refreshToken,
     deviceInfo: sessionData.deviceInfo || {},

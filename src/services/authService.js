@@ -14,6 +14,9 @@ const {
 /**
  * Service d'authentification intégré avec User.js sessions
  * Gestion complète : register, login, refresh, logout, security
+ * 
+ * IMPORTANT: Toutes les fonctions retournent des objets {success: boolean}
+ * au lieu de lancer des exceptions pour une gestion d'erreur cohérente
  */
 
 // ===================================================================
@@ -39,19 +42,18 @@ const registerUser = async (userData, deviceInfo = {}) => {
     });
 
     if (existingUser) {
-      throw new Error('Un utilisateur avec cet email ou téléphone existe déjà');
+      return {
+        success: false,
+        error: 'Un utilisateur avec cet email ou téléphone existe déjà'
+      };
     }
 
-    // 2. Hash du mot de passe
-    const saltRounds = 12;
-
-
-    // 3. Créer utilisateur
+    // 2. Créer utilisateur (le hashing du password est fait dans User.js pre-save)
     const user = new User({
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       email: email.toLowerCase().trim(),
-      password: password,
+      password: password, // Sera hashé automatiquement par User.js
       phone: phone.trim(),
       region: region.toLowerCase(),
       city: city.trim(),
@@ -61,10 +63,10 @@ const registerUser = async (userData, deviceInfo = {}) => {
 
     await user.save();
 
-    // 4. Générer tokens et session
+    // 3. Générer tokens et session
     const tokens = generateTokenPair(user, deviceInfo);
 
-    // 5. Ajouter session à User.js
+    // 4. Ajouter session à User.js
     await user.addSession({
       sessionId: tokens.sessionId,
       accessToken: tokens.accessToken,
@@ -80,22 +82,24 @@ const registerUser = async (userData, deviceInfo = {}) => {
       expiresAt: new Date(tokens.refreshExpiresIn)
     });
 
-    // 6. Ajouter refresh token
+    // 5. Ajouter refresh token
     await user.addRefreshToken({
       token: tokens.refreshToken,
       expiresAt: new Date(tokens.refreshExpiresIn),
       deviceInfo: deviceInfo
     });
 
-    // 7. Retourner données (sans password)
+    // 6. Préparer réponse utilisateur (sans données sensibles)
     const userResponse = user.toObject();
     delete userResponse.password;
     delete userResponse.refreshTokens;
     delete userResponse.activeSessions;
+    delete userResponse.verificationToken;
+    delete userResponse.resetPasswordToken;
 
     return {
       success: true,
-      message: 'Utilisateur créé avec succès',
+      message: 'Inscription réussie',
       user: userResponse,
       tokens: {
         accessToken: tokens.accessToken,
@@ -105,12 +109,17 @@ const registerUser = async (userData, deviceInfo = {}) => {
       },
       session: {
         sessionId: tokens.sessionId,
-        deviceId: tokens.deviceId
+        deviceId: tokens.deviceId,
+        deviceInfo: deviceInfo
       }
     };
 
   } catch (error) {
-    throw new Error(`Erreur enregistrement: ${error.message}`);
+    console.error('❌ Erreur enregistrement:', error.message);
+    return {
+      success: false,
+      error: `Erreur enregistrement: ${error.message}`
+    };
   }
 };
 
@@ -119,25 +128,35 @@ const registerUser = async (userData, deviceInfo = {}) => {
 // ===================================================================
 
 /**
- * Connexion utilisateur
- * @param {Object} credentials - Email/phone + password
- * @param {Object} deviceInfo - Informations device
- * @returns {Object} - Utilisateur + tokens + session
+ * Connecter un utilisateur
+ * @param {string} identifier - Email ou téléphone
+ * @param {string} password - Mot de passe
+ * @param {Object} deviceInfo - Informations device/IP
+ * @returns {Object} - Utilisateur connecté + tokens
  */
-const loginUser = async (credentials, deviceInfo = {}) => {
+const loginUser = async (identifier, password, deviceInfo = {}) => {
   try {
-    const { identifier, password } = credentials; // identifier = email ou phone
-
     // 1. Trouver utilisateur par email ou téléphone
-    const user = await User.findByEmailOrPhone(identifier);
+    const user = await User.findOne({
+      $or: [
+        { email: identifier.toLowerCase() },
+        { phone: identifier }
+      ]
+    }).select('+password +loginAttempts +lockUntil');
 
     if (!user) {
-      throw new Error('Email/téléphone ou mot de passe incorrect');
+      return {
+        success: false,
+        error: 'Email/téléphone ou mot de passe incorrect'
+      };
     }
 
     // 2. Vérifier si compte verrouillé
-    if (user.isLocked()) {
-      throw new Error(`Compte temporairement verrouillé. Réessayez dans ${Math.ceil((user.lockUntil - Date.now()) / (1000 * 60))} minutes.`);
+    if (user.isAccountLocked) {
+      return {
+        success: false,
+        error: 'Compte temporairement verrouillé. Réessayez plus tard.'
+      };
     }
 
     // 3. Vérifier mot de passe
@@ -145,8 +164,12 @@ const loginUser = async (credentials, deviceInfo = {}) => {
 
     if (!isPasswordValid) {
       // Incrémenter tentatives de connexion
-      await user.incLoginAttempts();
-      throw new Error('Email/téléphone ou mot de passe incorrect');
+      await user.incrementLoginAttempts();
+      
+      return {
+        success: false,
+        error: 'Email/téléphone ou mot de passe incorrect'
+      };
     }
 
     // 4. Réinitialiser tentatives de connexion
@@ -190,7 +213,7 @@ const loginUser = async (credentials, deviceInfo = {}) => {
       deviceInfo: deviceInfo
     });
 
-    // 10. Retourner données
+    // 10. Préparer réponse utilisateur (sans données sensibles)
     const userResponse = user.toObject();
     delete userResponse.password;
     delete userResponse.refreshTokens;
@@ -216,7 +239,11 @@ const loginUser = async (credentials, deviceInfo = {}) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur connexion: ${error.message}`);
+    console.error('❌ Erreur connexion:', error.message);
+    return {
+      success: false,
+      error: `Erreur connexion: ${error.message}`
+    };
   }
 };
 
@@ -236,7 +263,10 @@ const refreshTokens = async (refreshToken, deviceInfo = {}) => {
     const verification = verifyRefreshToken(refreshToken);
 
     if (!verification.isValid) {
-      throw new Error(verification.error || 'Refresh token invalide');
+      return {
+        success: false,
+        error: verification.error || 'Refresh token invalide'
+      };
     }
 
     const { userId, sessionId } = verification.payload;
@@ -245,19 +275,28 @@ const refreshTokens = async (refreshToken, deviceInfo = {}) => {
     const user = await User.findByRefreshToken(refreshToken);
 
     if (!user) {
-      throw new Error('Refresh token non trouvé ou expiré');
+      return {
+        success: false,
+        error: 'Refresh token non trouvé ou expiré'
+      };
     }
 
     // 3. Vérifier que l'utilisateur correspond
     if (user._id.toString() !== userId) {
-      throw new Error('Refresh token invalide pour cet utilisateur');
+      return {
+        success: false,
+        error: 'Refresh token invalide pour cet utilisateur'
+      };
     }
 
     // 4. Trouver la session correspondante
     const session = user.activeSessions.find(s => s.sessionId === sessionId);
 
     if (!session || !session.isActive) {
-      throw new Error('Session invalide ou expirée');
+      return {
+        success: false,
+        error: 'Session invalide ou expirée'
+      };
     }
 
     // 5. Générer nouveaux tokens
@@ -300,7 +339,11 @@ const refreshTokens = async (refreshToken, deviceInfo = {}) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur refresh token: ${error.message}`);
+    console.error('❌ Erreur refresh token:', error.message);
+    return {
+      success: false,
+      error: `Erreur refresh token: ${error.message}`
+    };
   }
 };
 
@@ -319,7 +362,10 @@ const logoutUser = async (userId, sessionId) => {
     const user = await User.findById(userId);
 
     if (!user) {
-      throw new Error('Utilisateur non trouvé');
+      return {
+        success: false,
+        error: 'Utilisateur non trouvé'
+      };
     }
 
     // Supprimer session spécifique
@@ -331,7 +377,11 @@ const logoutUser = async (userId, sessionId) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur déconnexion: ${error.message}`);
+    console.error('❌ Erreur déconnexion:', error.message);
+    return {
+      success: false,
+      error: `Erreur déconnexion: ${error.message}`
+    };
   }
 };
 
@@ -345,7 +395,10 @@ const logoutAllSessions = async (userId) => {
     const user = await User.findById(userId);
 
     if (!user) {
-      throw new Error('Utilisateur non trouvé');
+      return {
+        success: false,
+        error: 'Utilisateur non trouvé'
+      };
     }
 
     // Invalider toutes les sessions et refresh tokens
@@ -360,18 +413,22 @@ const logoutAllSessions = async (userId) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur déconnexion globale: ${error.message}`);
+    console.error('❌ Erreur déconnexion globale:', error.message);
+    return {
+      success: false,
+      error: `Erreur déconnexion globale: ${error.message}`
+    };
   }
 };
 
 // ===================================================================
-// VALIDATION & VÉRIFICATION
+// VALIDATION & VÉRIFICATION - CORRECTION PRINCIPALE
 // ===================================================================
 
 /**
  * Valider access token et récupérer utilisateur
  * @param {string} authHeader - Header Authorization
- * @returns {Object} - Utilisateur + infos session
+ * @returns {Object} - Résultat validation avec success boolean
  */
 const validateAccessToken = async (authHeader) => {
   try {
@@ -379,14 +436,20 @@ const validateAccessToken = async (authHeader) => {
     const token = extractBearerToken(authHeader);
 
     if (!token) {
-      throw new Error('Token d\'authentification requis');
+      return {
+        success: false,
+        error: 'Token d\'authentification requis'
+      };
     }
 
     // 2. Vérifier token JWT
     const verification = verifyAccessToken(token);
 
     if (!verification.isValid) {
-      throw new Error(verification.error || 'Token invalide');
+      return {
+        success: false,
+        error: verification.error || 'Token invalide'
+      };
     }
 
     const { userId, sessionId } = verification.payload;
@@ -394,15 +457,28 @@ const validateAccessToken = async (authHeader) => {
     // 3. Trouver utilisateur
     const user = await User.findById(userId);
 
-    if (!user || !user.isActive) {
-      throw new Error('Utilisateur non trouvé ou inactif');
+    if (!user) {
+      return {
+        success: false,
+        error: 'Utilisateur non trouvé'
+      };
+    }
+
+    if (!user.isActive) {
+      return {
+        success: false,
+        error: 'Compte utilisateur inactif'
+      };
     }
 
     // 4. Vérifier session active
     const session = user.activeSessions.find(s => s.sessionId === sessionId && s.isActive);
 
     if (!session) {
-      throw new Error('Session invalide ou expirée');
+      return {
+        success: false,
+        error: 'Session invalide ou expirée'
+      };
     }
 
     // 5. Vérifier si token expire bientôt
@@ -431,7 +507,12 @@ const validateAccessToken = async (authHeader) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur validation token: ${error.message}`);
+    console.error('❌ Erreur validation token:', error.message);
+    
+    return {
+      success: false,
+      error: `Erreur validation token: ${error.message}`
+    };
   }
 };
 
@@ -442,19 +523,24 @@ const validateAccessToken = async (authHeader) => {
  * @returns {boolean} - True si autorisé
  */
 const checkUserPermissions = (user, requiredRoles) => {
-  if (!user || !user.role) {
+  try {
+    if (!user || !user.role) {
+      return false;
+    }
+
+    if (typeof requiredRoles === 'string') {
+      return user.role === requiredRoles;
+    }
+
+    if (Array.isArray(requiredRoles)) {
+      return requiredRoles.includes(user.role);
+    }
+
+    return false;
+  } catch (error) {
+    console.error('❌ Erreur vérification permissions:', error.message);
     return false;
   }
-
-  if (typeof requiredRoles === 'string') {
-    return user.role === requiredRoles;
-  }
-
-  if (Array.isArray(requiredRoles)) {
-    return requiredRoles.includes(user.role);
-  }
-
-  return false;
 };
 
 // ===================================================================
@@ -471,63 +557,63 @@ const generatePasswordResetToken = async (email) => {
     const user = await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
-      // Ne pas révéler si email existe
+      // Ne pas révéler si email existe pour sécurité
       return {
         success: true,
         message: 'Si cet email existe, un lien de réinitialisation a été envoyé'
       };
     }
 
-    // Générer token reset
-    const resetToken = user.generateResetPasswordToken();
-    await user.save();
+    // Générer token temporaire
+    const resetToken = generateTemporaryToken();
+    const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 heure
 
-    // Générer JWT temporaire pour sécurité supplémentaire
-    const tempToken = generateTemporaryToken({
-      userId: user._id.toString(),
-      email: user.email,
-      type: 'password_reset'
-    }, '1h');
+    // Sauvegarder token dans utilisateur
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = resetExpires;
+    await user.save();
 
     return {
       success: true,
+      message: 'Token de réinitialisation généré',
       resetToken: resetToken,
-      tempToken: tempToken,
-      expiresIn: '1h',
-      user: {
-        id: user._id,
-        email: user.email,
-        firstName: user.firstName
-      }
+      email: user.email,
+      expiresAt: resetExpires
     };
 
   } catch (error) {
-    throw new Error(`Erreur génération token reset: ${error.message}`);
+    console.error('❌ Erreur génération token reset:', error.message);
+    return {
+      success: false,
+      error: `Erreur génération token reset: ${error.message}`
+    };
   }
 };
 
 /**
- * Réinitialiser mot de passe
+ * Réinitialiser mot de passe avec token
  * @param {string} resetToken - Token de réinitialisation
  * @param {string} newPassword - Nouveau mot de passe
- * @returns {Object} - Résultat reset
+ * @returns {Object} - Résultat réinitialisation
  */
 const resetPassword = async (resetToken, newPassword) => {
   try {
     const user = await User.findOne({
       resetPasswordToken: resetToken,
       resetPasswordExpires: { $gt: Date.now() }
-    });
+    }).select('+resetPasswordToken +resetPasswordExpires');
 
     if (!user) {
-      throw new Error('Token de réinitialisation invalide ou expiré');
+      return {
+        success: false,
+        error: 'Token de réinitialisation invalide ou expiré'
+      };
     }
 
     // Hash nouveau mot de passe
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
 
-    // Mettre à jour utilisateur
     user.password = hashedPassword;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
@@ -544,7 +630,11 @@ const resetPassword = async (resetToken, newPassword) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur réinitialisation mot de passe: ${error.message}`);
+    console.error('❌ Erreur réinitialisation mot de passe:', error.message);
+    return {
+      success: false,
+      error: `Erreur réinitialisation mot de passe: ${error.message}`
+    };
   }
 };
 
@@ -560,14 +650,20 @@ const changePassword = async (userId, currentPassword, newPassword) => {
     const user = await User.findById(userId).select('+password');
 
     if (!user) {
-      throw new Error('Utilisateur non trouvé');
+      return {
+        success: false,
+        error: 'Utilisateur non trouvé'
+      };
     }
 
     // Vérifier mot de passe actuel
     const isCurrentValid = await bcrypt.compare(currentPassword, user.password);
 
     if (!isCurrentValid) {
-      throw new Error('Mot de passe actuel incorrect');
+      return {
+        success: false,
+        error: 'Mot de passe actuel incorrect'
+      };
     }
 
     // Hash nouveau mot de passe
@@ -583,7 +679,11 @@ const changePassword = async (userId, currentPassword, newPassword) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur changement mot de passe: ${error.message}`);
+    console.error('❌ Erreur changement mot de passe:', error.message);
+    return {
+      success: false,
+      error: `Erreur changement mot de passe: ${error.message}`
+    };
   }
 };
 
@@ -601,7 +701,10 @@ const getUserSessions = async (userId) => {
     const user = await User.findById(userId);
 
     if (!user) {
-      throw new Error('Utilisateur non trouvé');
+      return {
+        success: false,
+        error: 'Utilisateur non trouvé'
+      };
     }
 
     const activeSessions = user.activeSessions
@@ -623,7 +726,11 @@ const getUserSessions = async (userId) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur récupération sessions: ${error.message}`);
+    console.error('❌ Erreur récupération sessions:', error.message);
+    return {
+      success: false,
+      error: `Erreur récupération sessions: ${error.message}`
+    };
   }
 };
 
@@ -637,7 +744,10 @@ const cleanExpiredSessions = async (userId) => {
     const user = await User.findById(userId);
 
     if (!user) {
-      throw new Error('Utilisateur non trouvé');
+      return {
+        success: false,
+        error: 'Utilisateur non trouvé'
+      };
     }
 
     const before = user.activeSessions.length;
@@ -656,7 +766,11 @@ const cleanExpiredSessions = async (userId) => {
     };
 
   } catch (error) {
-    throw new Error(`Erreur nettoyage sessions: ${error.message}`);
+    console.error('❌ Erreur nettoyage sessions:', error.message);
+    return {
+      success: false,
+      error: `Erreur nettoyage sessions: ${error.message}`
+    };
   }
 };
 
