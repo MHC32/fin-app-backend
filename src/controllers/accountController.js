@@ -57,9 +57,9 @@ const handleValidationErrors = (req, res, next) => {
 const sanitizeAccountData = (account) => {
   const accountData = account.toObject ? account.toObject() : account;
   
-  // Ajouter données enrichies
-  accountData.bankInfo = HAITI_BANKS.find(bank => bank.code === accountData.bankName) || {};
-  accountData.currencyInfo = CURRENCIES.find(curr => curr.code === accountData.currency) || {};
+  // ✅ CORRECTION: Accès direct aux propriétés d'objet au lieu de .find()
+  accountData.bankInfo = HAITI_BANKS[accountData.bankName] || HAITI_BANKS.other;
+  accountData.currencyInfo = CURRENCIES[accountData.currency] || CURRENCIES.HTG;
   
   return accountData;
 };
@@ -82,14 +82,14 @@ const createAccountValidation = [
   body('type')
     .notEmpty()
     .withMessage('Le type de compte est requis')
-    .isIn(Object.values(ACCOUNT_TYPES))
+    .isIn(Object.keys(ACCOUNT_TYPES))  // ✅ CORRECTION: Object.keys() au lieu de Object.values()
     .withMessage('Type de compte invalide'),
     
   body('bankName')
     .notEmpty()
     .withMessage('La banque est requise')
     .custom(value => {
-      const validBanks = HAITI_BANKS.map(bank => bank.code);
+      const validBanks = Object.keys(HAITI_BANKS);  // ✅ CORRECTION: Object.keys() au lieu de .map()
       if (!validBanks.includes(value)) {
         throw new Error('Banque non supportée en Haïti');
       }
@@ -99,7 +99,7 @@ const createAccountValidation = [
   body('currency')
     .notEmpty()
     .withMessage('La devise est requise')
-    .isIn(Object.values(CURRENCIES).map(curr => curr.code))
+    .isIn(Object.keys(CURRENCIES))  // ✅ CORRECTION: Object.keys() au lieu de Object.values().map()
     .withMessage('Devise non supportée'),
     
   body('accountNumber')
@@ -215,24 +215,13 @@ const createAccount = [
         description: description?.trim(),
         tags: tags || [],
         isDefault: shouldBeDefault,
-        createdAt: new Date()
+        initialBalance
       });
-
-      // Ajouter solde initial à l'historique
-      if (initialBalance > 0) {
-        account.balanceHistory.push({
-          balance: initialBalance,
-          change: initialBalance,
-          reason: 'initial',
-          description: 'Solde initial du compte'
-        });
-      }
 
       await account.save();
 
-      // Populer les données pour la réponse
-      const populatedAccount = await Account.findById(account._id);
-      const accountData = sanitizeAccountData(populatedAccount);
+      // Réponse avec données nettoyées
+      const accountData = sanitizeAccountData(account);
 
       res.status(201).json({
         success: true,
@@ -246,11 +235,27 @@ const createAccount = [
     } catch (error) {
       console.error('❌ Erreur createAccount:', error.message);
 
-      // Gestion erreurs spécifiques
+      // Gestion des erreurs de validation Mongoose
+      if (error.name === 'ValidationError') {
+        const mongooseErrors = {};
+        
+        Object.keys(error.errors).forEach(key => {
+          mongooseErrors[key] = [error.errors[key].message];
+        });
+
+        return res.status(400).json({
+          success: false,
+          message: 'Erreurs de validation',
+          errors: mongooseErrors,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Gestion erreur duplicate (si index unique sur accountNumber)
       if (error.code === 11000) {
         return res.status(400).json({
           success: false,
-          message: 'Un compte avec ce numéro existe déjà',
+          message: 'Ce numéro de compte existe déjà',
           error: 'duplicate_account_number',
           timestamp: new Date().toISOString()
         });
@@ -267,52 +272,73 @@ const createAccount = [
 ];
 
 /**
- * Obtenir tous les comptes de l'utilisateur
+ * Lister tous les comptes de l'utilisateur
  * GET /api/accounts
  * @access Private (authentification requise)
  */
-const getUserAccounts = async (req, res) => {
+const getAccounts = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { includeArchived = false, currency, type } = req.query;
+    const {
+      includeInactive = 'false',
+      includeArchived = 'false',
+      type,
+      currency,
+      bankName
+    } = req.query;
 
-    // Construire la query
-    const query = { user: userId };
-    
-    if (!includeArchived) {
-      query.isActive = true;
-      query.isArchived = false;
+    // Construction du filtre de recherche
+    const filter = { user: userId };
+
+    if (includeInactive !== 'true') {
+      filter.isActive = true;
     }
-    
-    if (currency) query.currency = currency;
-    if (type) query.type = type;
 
-    // Récupérer les comptes
-    const accounts = await Account.find(query)
+    if (includeArchived !== 'true') {
+      filter.isArchived = { $ne: true };
+    }
+
+    if (type) {
+      filter.type = type;
+    }
+
+    if (currency) {
+      filter.currency = currency;
+    }
+
+    if (bankName) {
+      filter.bankName = bankName;
+    }
+
+    const accounts = await Account.find(filter)
       .sort({ isDefault: -1, createdAt: -1 });
 
-    // Calculer les totaux par devise
-    const totals = await Account.getTotalsByUser(userId);
-
-    // Sanitiser les données
     const accountsData = accounts.map(account => sanitizeAccountData(account));
+
+    // Calculer les totaux par devise
+    const totals = accountsData.reduce((acc, account) => {
+      if (account.includeInTotal && account.isActive) {
+        if (!acc[account.currency]) {
+          acc[account.currency] = 0;
+        }
+        acc[account.currency] += account.currentBalance;
+      }
+      return acc;
+    }, {});
 
     res.status(200).json({
       success: true,
       data: {
         accounts: accountsData,
-        totals: totals,
-        summary: {
-          totalAccounts: accounts.length,
-          activeAccounts: accounts.filter(acc => acc.isActive).length,
-          currencies: [...new Set(accounts.map(acc => acc.currency))]
-        }
+        totals,
+        totalAccounts: accountsData.length,
+        activeAccounts: accountsData.filter(acc => acc.isActive).length
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('❌ Erreur getUserAccounts:', error.message);
+    console.error('❌ Erreur getAccounts:', error.message);
 
     res.status(500).json({
       success: false,
@@ -324,7 +350,7 @@ const getUserAccounts = async (req, res) => {
 };
 
 /**
- * Obtenir un compte spécifique
+ * Récupérer un compte spécifique
  * GET /api/accounts/:accountId
  * @access Private (authentification requise + ownership)
  */
@@ -332,9 +358,7 @@ const getAccountById = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { accountId } = req.params;
-    const { includeHistory = false } = req.query;
 
-    // Trouver le compte
     const account = await Account.findOne({
       _id: accountId,
       user: userId
@@ -349,40 +373,11 @@ const getAccountById = async (req, res) => {
       });
     }
 
-    // Préparer les données
     const accountData = sanitizeAccountData(account);
 
-    // Ajouter historique si demandé
-    if (includeHistory) {
-      accountData.recentHistory = account.getRecentHistory(30);
-    }
-
-    // Ajouter statistiques du compte
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const transactionStats = await Transaction.aggregate([
-      {
-        $match: {
-          account: account._id,
-          date: { $gte: thirtyDaysAgo },
-          isConfirmed: true
-        }
-      },
-      {
-        $group: {
-          _id: '$type',
-          total: { $sum: '$amount' },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    accountData.stats = {
-      transactionStats,
-      balanceChange30Days: account.balanceHistory.length > 0 ? 
-        account.currentBalance - (account.balanceHistory[0]?.balance || account.currentBalance) : 0
-    };
+    // Ajouter des informations supplémentaires
+    accountData.recentChange = account.balanceHistory?.length > 0 ? 
+      account.currentBalance - (account.balanceHistory[0]?.balance || account.currentBalance) : 0;
 
     res.status(200).json({
       success: true,
@@ -436,7 +431,8 @@ const updateAccount = [
       // Mettre à jour les champs autorisés
       const allowedFields = [
         'name', 'description', 'minimumBalance', 'creditLimit',
-        'isActive', 'includeInTotal', 'tags', 'allowNegativeBalance'
+        'isActive', 'includeInTotal', 'tags', 'allowNegativeBalance',
+        'color', 'icon', 'notes'
       ];
 
       allowedFields.forEach(field => {
@@ -462,6 +458,21 @@ const updateAccount = [
     } catch (error) {
       console.error('❌ Erreur updateAccount:', error.message);
 
+      if (error.name === 'ValidationError') {
+        const mongooseErrors = {};
+        
+        Object.keys(error.errors).forEach(key => {
+          mongooseErrors[key] = [error.errors[key].message];
+        });
+
+        return res.status(400).json({
+          success: false,
+          message: 'Erreurs de validation',
+          errors: mongooseErrors,
+          timestamp: new Date().toISOString()
+        });
+      }
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la mise à jour du compte',
@@ -473,7 +484,170 @@ const updateAccount = [
 ];
 
 /**
- * Définir compte par défaut
+ * Supprimer/désactiver un compte
+ * DELETE /api/accounts/:accountId
+ * @access Private (authentification requise + ownership)
+ */
+const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { accountId } = req.params;
+    const { permanent = false } = req.query;
+
+    const account = await Account.findOne({
+      _id: accountId,
+      user: userId
+    });
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: 'Compte non trouvé',
+        error: 'account_not_found',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Vérifier s'il y a des transactions liées
+    const transactionCount = await Transaction.countDocuments({
+      account: accountId
+    });
+
+    if (transactionCount > 0 && permanent === 'true') {
+      return res.status(400).json({
+        success: false,
+        message: 'Impossible de supprimer définitivement un compte avec des transactions',
+        error: 'account_has_transactions',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (permanent === 'true') {
+      // Suppression définitive
+      await Account.findByIdAndDelete(accountId);
+
+      res.status(200).json({
+        success: true,
+        message: 'Compte supprimé définitivement',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Désactivation (soft delete)
+      account.isActive = false;
+      account.isDefault = false;
+      await account.save();
+
+      res.status(200).json({
+        success: true,
+        message: 'Compte désactivé avec succès',
+        data: {
+          account: sanitizeAccountData(account)
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur deleteAccount:', error.message);
+
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression du compte',
+      error: 'account_deletion_error',
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Ajuster le solde d'un compte
+ * PUT /api/accounts/:accountId/adjust-balance
+ * @access Private (authentification requise + ownership)
+ */
+const adjustBalance = [
+  body('amount')
+    .notEmpty()
+    .withMessage('Le montant est requis')
+    .isFloat({ min: -1000000, max: 1000000 })
+    .withMessage('Montant invalide (entre -1M et 1M)'),
+  
+  body('description')
+    .notEmpty()
+    .withMessage('La description est requise')
+    .trim()
+    .isLength({ min: 2, max: 255 })
+    .withMessage('La description doit contenir entre 2 et 255 caractères'),
+
+  handleValidationErrors,
+  
+  async (req, res) => {
+    try {
+      const userId = req.user.userId;
+      const { accountId } = req.params;
+      const { amount, description } = req.body;
+
+      const account = await Account.findOne({
+        _id: accountId,
+        user: userId,
+        isActive: true
+      });
+
+      if (!account) {
+        return res.status(404).json({
+          success: false,
+          message: 'Compte non trouvé ou inactif',
+          error: 'account_not_found',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const previousBalance = account.currentBalance;
+      account.currentBalance += amount;
+      account.availableBalance = account.currentBalance;
+
+      // Ajouter à l'historique
+      account.balanceHistory.push({
+        date: new Date(),
+        balance: account.currentBalance,
+        change: amount,
+        reason: 'adjustment',
+        description: description
+      });
+
+      await account.save();
+
+      const accountData = sanitizeAccountData(account);
+
+      res.status(200).json({
+        success: true,
+        message: 'Solde ajusté avec succès',
+        data: {
+          account: accountData,
+          adjustment: {
+            previousBalance,
+            newBalance: account.currentBalance,
+            amount: amount,
+            description: description
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur adjustBalance:', error.message);
+
+      res.status(500).json({
+        success: false,
+        message: 'Erreur lors de l\'ajustement du solde',
+        error: 'balance_adjustment_error',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+];
+
+/**
+ * Définir un compte comme compte par défaut
  * PUT /api/accounts/:accountId/set-default
  * @access Private (authentification requise + ownership)
  */
@@ -482,7 +656,6 @@ const setDefaultAccount = async (req, res) => {
     const userId = req.user.userId;
     const { accountId } = req.params;
 
-    // Trouver le compte
     const account = await Account.findOne({
       _id: accountId,
       user: userId,
@@ -498,8 +671,15 @@ const setDefaultAccount = async (req, res) => {
       });
     }
 
-    // Utiliser la méthode du modèle
-    await account.setAsDefault();
+    // Désactiver le défaut sur tous les autres comptes
+    await Account.updateMany(
+      { user: userId, _id: { $ne: accountId } },
+      { isDefault: false }
+    );
+
+    // Activer le défaut sur ce compte
+    account.isDefault = true;
+    await account.save();
 
     const accountData = sanitizeAccountData(account);
 
@@ -535,7 +715,6 @@ const archiveAccount = async (req, res) => {
     const { accountId } = req.params;
     const { reason = 'user_request' } = req.body;
 
-    // Trouver le compte
     const account = await Account.findOne({
       _id: accountId,
       user: userId
@@ -550,7 +729,7 @@ const archiveAccount = async (req, res) => {
       });
     }
 
-    // Vérifier si c'est le compte par défaut
+    // Vérifier si c'est le seul compte actif
     if (account.isDefault) {
       const otherActiveAccounts = await Account.countDocuments({
         user: userId,
@@ -566,21 +745,15 @@ const archiveAccount = async (req, res) => {
           timestamp: new Date().toISOString()
         });
       }
-
-      // Si c'est le compte par défaut, en définir un autre
-      const newDefaultAccount = await Account.findOne({
-        user: userId,
-        isActive: true,
-        _id: { $ne: accountId }
-      });
-
-      if (newDefaultAccount) {
-        await newDefaultAccount.setAsDefault();
-      }
     }
 
-    // Archiver le compte
-    await account.archive(reason);
+    account.isArchived = true;
+    account.isActive = false;
+    account.isDefault = false;
+    account.archivedAt = new Date();
+    account.archiveReason = reason;
+
+    await account.save();
 
     const accountData = sanitizeAccountData(account);
 
@@ -594,12 +767,12 @@ const archiveAccount = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Erreur archiveAccount:', error.message);
+    console.error('❌ Erreur archiveAccount:', error);
 
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'archivage du compte',
-      error: 'account_archive_error',
+      error: 'archive_error',
       timestamp: new Date().toISOString()
     });
   }
@@ -615,7 +788,6 @@ const unarchiveAccount = async (req, res) => {
     const userId = req.user.userId;
     const { accountId } = req.params;
 
-    // Trouver le compte
     const account = await Account.findOne({
       _id: accountId,
       user: userId,
@@ -631,8 +803,12 @@ const unarchiveAccount = async (req, res) => {
       });
     }
 
-    // Désarchiver le compte
-    await account.unarchive();
+    account.isArchived = false;
+    account.isActive = true;
+    account.archivedAt = null;
+    account.archiveReason = null;
+
+    await account.save();
 
     const accountData = sanitizeAccountData(account);
 
@@ -646,165 +822,12 @@ const unarchiveAccount = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Erreur unarchiveAccount:', error.message);
+    console.error('❌ Erreur unarchiveAccount:', error);
 
     res.status(500).json({
       success: false,
       message: 'Erreur lors du désarchivage du compte',
-      error: 'account_unarchive_error',
-      timestamp: new Date().toISOString()
-    });
-  }
-};
-
-/**
- * Ajuster le solde d'un compte
- * PUT /api/accounts/:accountId/adjust-balance
- * @access Private (authentification requise + ownership)
- */
-const adjustBalance = [
-  body('amount')
-    .notEmpty()
-    .withMessage('Le montant est requis')
-    .isFloat()
-    .withMessage('Le montant doit être un nombre'),
-    
-  body('description')
-    .notEmpty()
-    .withMessage('La description est requise')
-    .trim()
-    .isLength({ min: 5, max: 200 })
-    .withMessage('La description doit contenir entre 5 et 200 caractères'),
-    
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const userId = req.user.userId;
-      const { accountId } = req.params;
-      const { amount, description } = req.body;
-
-      // Trouver le compte
-      const account = await Account.findOne({
-        _id: accountId,
-        user: userId,
-        isActive: true
-      });
-
-      if (!account) {
-        return res.status(404).json({
-          success: false,
-          message: 'Compte actif non trouvé',
-          error: 'account_not_found',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Vérifier si l'ajustement est possible
-      if (!account.canProcessTransaction(amount)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Ajustement impossible : dépassement des limites du compte',
-          error: 'balance_adjustment_forbidden',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      const previousBalance = account.currentBalance;
-
-      // Utiliser la méthode du modèle
-      await account.updateBalance(amount, description);
-
-      const accountData = sanitizeAccountData(account);
-
-      res.status(200).json({
-        success: true,
-        message: 'Solde ajusté avec succès',
-        data: {
-          account: accountData,
-          adjustment: {
-            amount,
-            previousBalance,
-            newBalance: account.currentBalance,
-            description
-          }
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Erreur adjustBalance:', error.message);
-
-      res.status(500).json({
-        success: false,
-        message: 'Erreur lors de l\'ajustement du solde',
-        error: 'balance_adjustment_error',
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-];
-
-// ===================================================================
-// CONTROLLERS ADMIN
-// ===================================================================
-
-/**
- * Statistiques comptes pour admin
- * GET /api/accounts/admin/stats
- * @access Private (admin seulement)
- */
-const getAccountsStats = async (req, res) => {
-  try {
-    // Statistiques générales
-    const totalAccounts = await Account.countDocuments({ isActive: true });
-    const totalBalance = await Account.aggregate([
-      { $match: { isActive: true, includeInTotal: true } },
-      { $group: { _id: '$currency', total: { $sum: '$currentBalance' } } }
-    ]);
-
-    // Statistiques par banque
-    const bankStats = await Account.getBankStats();
-
-    // Comptes avec solde critique
-    const criticalAccounts = await Account.aggregate([
-      {
-        $match: {
-          isActive: true,
-          $expr: { $lt: ['$currentBalance', '$minimumBalance'] }
-        }
-      },
-      { $count: 'total' }
-    ]);
-
-    // Tendances (créations derniers 30 jours)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const recentAccounts = await Account.countDocuments({
-      createdAt: { $gte: thirtyDaysAgo }
-    });
-
-    res.status(200).json({
-      success: true,
-      data: {
-        overview: {
-          totalAccounts,
-          totalBalance,
-          criticalAccounts: criticalAccounts[0]?.total || 0,
-          recentAccounts
-        },
-        bankStats,
-        timestamp: new Date().toISOString()
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Erreur getAccountsStats:', error.message);
-
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la récupération des statistiques',
-      error: 'admin_stats_error',
+      error: 'unarchive_error',
       timestamp: new Date().toISOString()
     });
   }
@@ -813,19 +836,27 @@ const getAccountsStats = async (req, res) => {
 // ===================================================================
 // EXPORTS
 // ===================================================================
+
 module.exports = {
-  // CRUD principal
+  // Validation middleware
+  createAccountValidation,
+  updateAccountValidation,
+  handleValidationErrors,
+  
+  // CRUD operations
   createAccount,
-  getUserAccounts,
+  getAccounts,
   getAccountById,
   updateAccount,
+  deleteAccount,
   
-  // Actions spéciales
+  // Special operations
+  adjustBalance,
   setDefaultAccount,
   archiveAccount,
   unarchiveAccount,
-  adjustBalance,
   
-  // Admin
-  getAccountsStats
+  // Utilities
+  sanitizeAccountData,
+  formatValidationErrors
 };

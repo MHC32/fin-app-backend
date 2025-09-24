@@ -84,49 +84,6 @@ const balanceAdjustmentLimiter = rateLimit({
 });
 
 // ===================================================================
-// DOCUMENTATION API ACCOUNTS
-// ===================================================================
-
-/**
- * @route   GET /api/accounts
- * @desc    Documentation et informations sur l'API Accounts
- * @access  Public
- */
-router.get('/', (req, res) => {
-  res.json({
-    message: 'API Accounts FinApp Haiti 🏦',
-    description: 'Gestion des comptes bancaires haïtiens',
-    version: '1.0.0',
-    endpoints: {
-      // CRUD Principal
-      'POST /': 'Créer un nouveau compte',
-      'GET /list': 'Lister mes comptes',
-      'GET /:accountId': 'Détails d\'un compte',
-      'PUT /:accountId': 'Modifier un compte',
-      
-      // Actions spéciales
-      'PUT /:accountId/set-default': 'Définir compte par défaut',
-      'PUT /:accountId/archive': 'Archiver un compte',
-      'PUT /:accountId/unarchive': 'Désarchiver un compte',
-      'PUT /:accountId/adjust-balance': 'Ajuster le solde',
-      
-      // Admin
-      'GET /admin/stats': 'Statistiques comptes (admin)'
-    },
-    rateLimits: {
-      accountOperations: '30 requêtes / 15 minutes',
-      accountCreation: '5 créations / heure',
-      balanceAdjustment: '10 ajustements / heure'
-    },
-    supportedBanks: [
-      'BUH', 'BNC', 'SOGEBANK', 'CAPITAL', 'UNIBANK', 'SOGEBEL', 'FONKOZE'
-    ],
-    supportedCurrencies: ['HTG', 'USD'],
-    authentication: 'Bearer token requis'
-  });
-});
-
-// ===================================================================
 // ROUTES CRUD COMPTES
 // ===================================================================
 
@@ -142,16 +99,13 @@ router.get('/', (req, res) => {
  * 
  * Body: {
  *   name: string (requis),
- *   type: string (requis) - checking|savings|credit|investment|moncash,
- *   bankName: string (requis) - Code banque Haiti,
- *   currency: string (requis) - HTG|USD,
+ *   type: string (requis) - 'checking', 'savings', etc.,
+ *   bankName: string (requis) - Code banque haïtienne,
+ *   currency: string (requis) - 'HTG' ou 'USD',
  *   accountNumber?: string,
  *   initialBalance?: number,
- *   minimumBalance?: number,
- *   creditLimit?: number,
  *   description?: string,
- *   tags?: string[],
- *   isDefault?: boolean
+ *   tags?: string[]
  * }
  * 
  * Response: {
@@ -170,64 +124,59 @@ router.post('/',
 );
 
 /**
- * @route   GET /api/accounts/list
+ * @route   GET /api/accounts
  * @desc    Lister tous les comptes de l'utilisateur
  * @access  Private (authentification requise)
- * @middleware authenticate + accountOperationsLimiter
+ * @middleware authenticate + generalAuthLimiter
  * 
  * Headers: {
  *   Authorization: "Bearer <accessToken>"
  * }
  * 
  * Query Parameters: {
- *   includeArchived?: boolean,
- *   currency?: string,
- *   type?: string
+ *   includeInactive?: boolean - Inclure comptes inactifs,
+ *   includeArchived?: boolean - Inclure comptes archivés,
+ *   type?: string - Filtrer par type,
+ *   currency?: string - Filtrer par devise,
+ *   bankName?: string - Filtrer par banque
  * }
  * 
  * Response: {
  *   success: true,
  *   data: {
- *     accounts: [AccountObject],
- *     totals: [TotalByCurrency],
- *     summary: {
- *       totalAccounts: number,
- *       activeAccounts: number,
- *       currencies: string[]
- *     }
+ *     accounts: AccountObject[],
+ *     totals: { HTG: number, USD: number },
+ *     totalAccounts: number,
+ *     activeAccounts: number
  *   }
  * }
  */
-router.get('/list',
+router.get('/',
   authenticate,
-  accountOperationsLimiter,
-  accountController.getUserAccounts
+  generalAuthLimiter,
+  accountController.getAccounts
 );
 
 /**
  * @route   GET /api/accounts/:accountId
- * @desc    Obtenir détails d'un compte spécifique
+ * @desc    Récupérer un compte spécifique
  * @access  Private (authentification requise + ownership)
- * @middleware authenticate + accountOperationsLimiter
+ * @middleware authenticate + generalAuthLimiter
  * 
  * Headers: {
  *   Authorization: "Bearer <accessToken>"
  * }
  * 
- * Query Parameters: {
- *   includeHistory?: boolean
- * }
- * 
  * Response: {
  *   success: true,
  *   data: {
- *     account: AccountObject (with stats and history if requested)
+ *     account: AccountObject
  *   }
  * }
  */
 router.get('/:accountId',
   authenticate,
-  accountOperationsLimiter,
+  generalAuthLimiter,
   accountController.getAccountById
 );
 
@@ -248,8 +197,7 @@ router.get('/:accountId',
  *   creditLimit?: number,
  *   isActive?: boolean,
  *   includeInTotal?: boolean,
- *   tags?: string[],
- *   allowNegativeBalance?: boolean
+ *   tags?: string[]
  * }
  * 
  * Response: {
@@ -266,8 +214,76 @@ router.put('/:accountId',
   accountController.updateAccount
 );
 
+/**
+ * @route   DELETE /api/accounts/:accountId
+ * @desc    Supprimer/désactiver un compte
+ * @access  Private (authentification requise + ownership)
+ * @middleware authenticate + accountOperationsLimiter
+ * 
+ * Headers: {
+ *   Authorization: "Bearer <accessToken>"
+ * }
+ * 
+ * Query Parameters: {
+ *   permanent?: boolean - Suppression définitive (si aucune transaction)
+ * }
+ * 
+ * Response: {
+ *   success: true,
+ *   message: "Compte supprimé/désactivé avec succès",
+ *   data?: {
+ *     account: AccountObject (si désactivation)
+ *   }
+ * }
+ */
+router.delete('/:accountId',
+  authenticate,
+  accountOperationsLimiter,
+  accountController.deleteAccount
+);
+
 // ===================================================================
-// ROUTES ACTIONS SPÉCIALES
+// ROUTES GESTION SOLDE
+// ===================================================================
+
+/**
+ * @route   PUT /api/accounts/:accountId/adjust-balance
+ * @desc    Ajuster manuellement le solde d'un compte
+ * @access  Private (authentification requise + ownership)
+ * @middleware authenticate + balanceAdjustmentLimiter + accountOperationsLimiter
+ * 
+ * Headers: {
+ *   Authorization: "Bearer <accessToken>"
+ * }
+ * 
+ * Body: {
+ *   amount: number (requis) - Montant d'ajustement (+ ou -),
+ *   description: string (requis) - Raison de l'ajustement
+ * }
+ * 
+ * Response: {
+ *   success: true,
+ *   message: "Solde ajusté avec succès",
+ *   data: {
+ *     account: AccountObject,
+ *     adjustment: {
+ *       amount: number,
+ *       previousBalance: number,
+ *       newBalance: number,
+ *       description: string
+ *     }
+ *   }
+ * }
+ */
+router.put('/:accountId/adjust-balance',
+  authenticate,
+  balanceAdjustmentLimiter,
+  accountOperationsLimiter,
+  accountController.adjustBalance
+);
+
+// ===================================================================
+// ROUTES GESTION COMPTES
 // ===================================================================
 
 /**
@@ -296,7 +312,7 @@ router.put('/:accountId/set-default',
 
 /**
  * @route   PUT /api/accounts/:accountId/archive
- * @desc    Archiver un compte (soft delete)
+ * @desc    Archiver un compte
  * @access  Private (authentification requise + ownership)
  * @middleware authenticate + accountOperationsLimiter
  * 
@@ -346,42 +362,6 @@ router.put('/:accountId/unarchive',
   accountController.unarchiveAccount
 );
 
-/**
- * @route   PUT /api/accounts/:accountId/adjust-balance
- * @desc    Ajuster manuellement le solde d'un compte
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + balanceAdjustmentLimiter + accountOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   amount: number (requis) - Montant d'ajustement (+ ou -),
- *   description: string (requis) - Raison de l'ajustement
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Solde ajusté avec succès",
- *   data: {
- *     account: AccountObject,
- *     adjustment: {
- *       amount: number,
- *       previousBalance: number,
- *       newBalance: number,
- *       description: string
- *     }
- *   }
- * }
- */
-router.put('/:accountId/adjust-balance',
-  authenticate,
-  balanceAdjustmentLimiter,
-  accountOperationsLimiter,
-  accountController.adjustBalance
-);
-
 // ===================================================================
 // ROUTES UTILITAIRES
 // ===================================================================
@@ -412,7 +392,8 @@ router.get('/validate/bank/:bankCode',
       const { bankCode } = req.params;
       const { HAITI_BANKS } = require('../utils/constants');
       
-      const bank = HAITI_BANKS.find(b => b.code === bankCode.toUpperCase());
+      // ✅ CORRECTION: Object.values().find() au lieu de HAITI_BANKS.find()
+      const bank = Object.values(HAITI_BANKS).find(b => b.code === bankCode.toUpperCase());
       
       res.status(200).json({
         success: true,
@@ -461,8 +442,9 @@ router.get('/supported/banks',
       res.status(200).json({
         success: true,
         data: {
-          banks: HAITI_BANKS,
-          totalBanks: HAITI_BANKS.length
+          // ✅ CORRECTION: Object.values() pour retourner un tableau et Object.keys().length pour le count
+          banks: Object.values(HAITI_BANKS),
+          totalBanks: Object.keys(HAITI_BANKS).length
         },
         timestamp: new Date().toISOString()
       });
@@ -521,15 +503,11 @@ router.get('/supported/currencies',
   }
 );
 
-// ===================================================================
-// ROUTES ADMINISTRATIVES (ADMIN SEULEMENT)
-// ===================================================================
-
 /**
- * @route   GET /api/accounts/admin/stats
- * @desc    Statistiques globales des comptes (admin seulement)
- * @access  Private (admin uniquement)
- * @middleware authenticate + requireRole('admin') + adminLimiter
+ * @route   GET /api/accounts/supported/types
+ * @desc    Lister tous les types de comptes supportés
+ * @access  Private (authentification requise)
+ * @middleware authenticate + generalAuthLimiter
  * 
  * Headers: {
  *   Authorization: "Bearer <accessToken>"
@@ -538,13 +516,61 @@ router.get('/supported/currencies',
  * Response: {
  *   success: true,
  *   data: {
- *     overview: {
- *       totalAccounts: number,
- *       totalBalance: [BalanceByCurrency],
- *       criticalAccounts: number,
- *       recentAccounts: number
- *     },
- *     bankStats: [BankStatObject]
+ *     accountTypes: [AccountTypeObject],
+ *     totalTypes: number
+ *   }
+ * }
+ */
+router.get('/supported/types',
+  authenticate,
+  generalAuthLimiter,
+  async (req, res) => {
+    try {
+      const { ACCOUNT_TYPES } = require('../utils/constants');
+      
+      res.status(200).json({
+        success: true,
+        data: {
+          accountTypes: Object.values(ACCOUNT_TYPES),
+          totalTypes: Object.keys(ACCOUNT_TYPES).length
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Erreur récupération types de comptes',
+        error: 'account_types_fetch_error'
+      });
+    }
+  }
+);
+
+// ===================================================================
+// ROUTES ADMIN (Statistiques globales)
+// ===================================================================
+
+/**
+ * @route   GET /api/accounts/admin/stats
+ * @desc    Statistiques globales des comptes (admin uniquement)
+ * @access  Private (admin uniquement)
+ * @middleware authenticate + requireRole('admin') + adminLimiter
+ * 
+ * Headers: {
+ *   Authorization: "Bearer <adminAccessToken>"
+ * }
+ * 
+ * Response: {
+ *   success: true,
+ *   data: {
+ *     totalAccounts: number,
+ *     activeAccounts: number,
+ *     accountsByType: Object,
+ *     accountsByCurrency: Object,
+ *     accountsByBank: Object,
+ *     totalBalanceHTG: number,
+ *     totalBalanceUSD: number
  *   }
  * }
  */
@@ -552,168 +578,164 @@ router.get('/admin/stats',
   authenticate,
   requireRole('admin'),
   adminLimiter,
-  accountController.getAccountsStats
+  async (req, res) => {
+    try {
+      const Account = require('../models/Account');
+      
+      // Statistiques de base
+      const totalAccounts = await Account.countDocuments({});
+      const activeAccounts = await Account.countDocuments({ isActive: true });
+      
+      // Statistiques par type
+      const accountsByType = await Account.aggregate([
+        { $group: { _id: '$type', count: { $sum: 1 } } },
+        { $project: { type: '$_id', count: 1, _id: 0 } }
+      ]);
+      
+      // Statistiques par devise
+      const accountsByCurrency = await Account.aggregate([
+        { $group: { _id: '$currency', count: { $sum: 1 } } },
+        { $project: { currency: '$_id', count: 1, _id: 0 } }
+      ]);
+      
+      // Statistiques par banque
+      const accountsByBank = await Account.aggregate([
+        { $group: { _id: '$bankName', count: { $sum: 1 } } },
+        { $project: { bankName: '$_id', count: 1, _id: 0 } }
+      ]);
+      
+      // Totaux des soldes
+      const balanceTotals = await Account.aggregate([
+        { $match: { isActive: true, includeInTotal: true } },
+        { 
+          $group: { 
+            _id: '$currency',
+            totalBalance: { $sum: '$currentBalance' },
+            averageBalance: { $avg: '$currentBalance' },
+            count: { $sum: 1 }
+          } 
+        }
+      ]);
+      
+      const formatBalanceTotals = (totals) => {
+        const result = {};
+        totals.forEach(item => {
+          result[item._id] = {
+            total: item.totalBalance,
+            average: item.averageBalance,
+            accounts: item.count
+          };
+        });
+        return result;
+      };
+      
+      res.status(200).json({
+        success: true,
+        data: {
+          totalAccounts,
+          activeAccounts,
+          inactiveAccounts: totalAccounts - activeAccounts,
+          accountsByType,
+          accountsByCurrency,
+          accountsByBank,
+          balanceTotals: formatBalanceTotals(balanceTotals)
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Erreur admin stats:', error);
+      
+      res.status(500).json({
+        success: false,
+        message: 'Erreur lors de la récupération des statistiques',
+        error: 'admin_stats_error',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
 );
 
 /**
- * @route   GET /api/accounts/admin/critical-balances
- * @desc    Lister comptes avec soldes critiques (admin seulement)
+ * @route   GET /api/accounts/admin/users/:userId/accounts
+ * @desc    Lister les comptes d'un utilisateur spécifique (admin uniquement)
  * @access  Private (admin uniquement)
  * @middleware authenticate + requireRole('admin') + adminLimiter
  * 
  * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   limit?: number,
- *   page?: number
+ *   Authorization: "Bearer <adminAccessToken>"
  * }
  * 
  * Response: {
  *   success: true,
  *   data: {
- *     criticalAccounts: [AccountObject],
- *     totalCritical: number,
- *     affectedUsers: number
+ *     accounts: AccountObject[],
+ *     totalAccounts: number,
+ *     user: UserObject
  *   }
  * }
  */
-router.get('/admin/critical-balances',
+router.get('/admin/users/:userId/accounts',
   authenticate,
   requireRole('admin'),
   adminLimiter,
   async (req, res) => {
     try {
-      const { limit = 50, page = 1 } = req.query;
-      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const { userId } = req.params;
+      const Account = require('../models/Account');
+      const User = require('../models/User');
       
-      // Trouver comptes avec solde critique
-      const criticalAccounts = await require('../models/Account').aggregate([
-        {
-          $match: {
-            isActive: true,
-            $expr: { $lt: ['$currentBalance', '$minimumBalance'] }
-          }
-        },
-        {
-          $lookup: {
-            from: 'users',
-            localField: 'user',
-            foreignField: '_id',
-            as: 'userInfo'
-          }
-        },
-        {
-          $project: {
-            name: 1,
-            bankName: 1,
-            currentBalance: 1,
-            minimumBalance: 1,
-            currency: 1,
-            deficit: { $subtract: ['$minimumBalance', '$currentBalance'] },
-            'userInfo.firstName': 1,
-            'userInfo.lastName': 1,
-            'userInfo.email': 1,
-            'userInfo.region': 1
-          }
-        },
-        { $sort: { deficit: -1 } },
-        { $skip: skip },
-        { $limit: parseInt(limit) }
-      ]);
+      // Vérifier que l'utilisateur existe
+      const user = await User.findById(userId).select('-password -refreshTokens');
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'Utilisateur non trouvé',
+          error: 'user_not_found',
+          timestamp: new Date().toISOString()
+        });
+      }
       
-      // Compter total et utilisateurs affectés
-      const [totalStats] = await require('../models/Account').aggregate([
-        {
-          $match: {
-            isActive: true,
-            $expr: { $lt: ['$currentBalance', '$minimumBalance'] }
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            totalCritical: { $sum: 1 },
-            affectedUsers: { $addToSet: '$user' }
-          }
-        },
-        {
-          $project: {
-            totalCritical: 1,
-            affectedUsers: { $size: '$affectedUsers' }
-          }
-        }
-      ]);
+      // Récupérer tous les comptes de l'utilisateur
+      const accounts = await Account.find({ user: userId })
+        .sort({ isDefault: -1, createdAt: -1 });
+      
+      const accountsData = accounts.map(account => 
+        accountController.sanitizeAccountData(account)
+      );
       
       res.status(200).json({
         success: true,
         data: {
-          criticalAccounts,
-          totalCritical: totalStats?.totalCritical || 0,
-          affectedUsers: totalStats?.affectedUsers || 0,
-          pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
-            total: totalStats?.totalCritical || 0
+          accounts: accountsData,
+          totalAccounts: accountsData.length,
+          user: {
+            _id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            region: user.region,
+            isActive: user.isActive
           }
         },
         timestamp: new Date().toISOString()
       });
       
     } catch (error) {
-      console.error('❌ Erreur admin critical balances:', error.message);
+      console.error('❌ Erreur admin user accounts:', error);
       
       res.status(500).json({
         success: false,
-        message: 'Erreur récupération comptes critiques',
-        error: 'admin_critical_balances_error'
+        message: 'Erreur lors de la récupération des comptes utilisateur',
+        error: 'admin_user_accounts_error',
+        timestamp: new Date().toISOString()
       });
     }
   }
 );
 
 // ===================================================================
-// MIDDLEWARE D'ERREUR SPÉCIALISÉ
-// ===================================================================
-
-/**
- * Middleware de gestion d'erreurs spécifique aux comptes
- */
-router.use((err, req, res, next) => {
-  console.error('❌ Erreur Route Accounts:', err.message);
-  
-  // Erreurs MongoDB spécifiques
-  if (err.name === 'CastError') {
-    return res.status(400).json({
-      success: false,
-      message: 'ID de compte invalide',
-      error: 'invalid_account_id',
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  // Erreurs de validation
-  if (err.name === 'ValidationError') {
-    return res.status(400).json({
-      success: false,
-      message: 'Erreur de validation',
-      error: 'account_validation_error',
-      details: err.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  // Erreur générique
-  res.status(500).json({
-    success: false,
-    message: 'Erreur interne des comptes',
-    error: 'accounts_internal_error',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ===================================================================
 // EXPORT ROUTER
 // ===================================================================
+
 module.exports = router;
