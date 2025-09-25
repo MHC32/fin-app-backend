@@ -327,6 +327,8 @@ class SolController {
         details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
+    console.log("sol.creator._id:", sol.creator._id)
+   console.log("req.user.userId:", req.user.userId)
   };
 
   // ===================================================================

@@ -186,6 +186,9 @@ const authenticate = async (req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
+
+   console.log("req.user.userId:", req.user.userId)
+   console.log("req.user.userId type:", typeof req.user.userId)
 };
 
 // ===================================================================
