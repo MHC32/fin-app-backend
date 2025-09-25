@@ -1,714 +1,839 @@
-// src/models/Sol.js - Modèle tontines/sols FinApp Haiti
+// models/Sol.js
+// Modèle Mongoose pour la gestion des Sols/Tontines - FinApp Haiti
+// Version complète avec toutes les méthodes nécessaires
+
 const mongoose = require('mongoose');
 
-// Import des constantes
-const { 
-  SOL_FREQUENCIES,
-  SOL_TYPES,
-  SOL_STATUSES,
-  PAYMENT_STATUSES,
-  CURRENCIES,
-  DEFAULTS,
-  LIMITS,
-  VALIDATION_PATTERNS
-} = require('../utils/constants');
+// ===================================================================
+// SOUS-SCHEMAS
+// ===================================================================
 
-/**
- * Schéma Sol/Tontine adapté au contexte haïtien
- */
-const solSchema = new mongoose.Schema({
-  // ===================================================================
-  // RELATION CRÉATEUR
-  // ===================================================================
-  creator: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'Le créateur est requis'],
-    index: true
+const participantSchema = new mongoose.Schema({
+  user: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
   },
-  
-  // ===================================================================
-  // INFORMATIONS SOL
-  // ===================================================================
-  name: {
-    type: String,
-    required: [true, 'Le nom du sol est requis'],
-    trim: true,
-    minlength: [3, 'Le nom doit contenir au moins 3 caractères'],
-    maxlength: [100, 'Le nom ne peut pas dépasser 100 caractères']
+  position: { 
+    type: Number, 
+    required: true,
+    min: 1,
+    max: 20
   },
-  
-  description: {
-    type: String,
-    trim: true,
-    maxlength: [500, 'La description ne peut pas dépasser 500 caractères']
+  joinedAt: { 
+    type: Date, 
+    default: Date.now 
   },
-  
-  type: {
-    type: String,
-    required: [true, 'Le type de sol est requis'],
-    enum: {
-      values: Object.keys(SOL_TYPES),
-      message: 'Type de sol non valide'
-    },
-    default: 'classic'
+  role: { 
+    type: String, 
+    enum: ['creator', 'participant'], 
+    default: 'participant' 
   },
-  
-  // ===================================================================
-  // CONFIGURATION FINANCIÈRE
-  // ===================================================================
-  contributionAmount: {
+  paymentStatus: { 
+    type: String, 
+    enum: ['pending', 'paid', 'overdue', 'exempt'], 
+    default: 'pending' 
+  },
+  receivedAmount: { 
+    type: Number, 
+    default: 0 
+  },
+  totalPaid: {
     type: Number,
-    required: [true, 'Le montant de contribution est requis'],
-    min: [100, 'Montant de contribution trop faible'], // Utilisation valeur directe pour éviter erreur
-    validate: {
-      validator: function(v) {
-        const maxAmount = this.currency === 'HTG' ? 50000 : 1000; // Valeurs directes
-        return v <= maxAmount;
-      },
-      message: 'Montant de contribution trop élevé'
-    }
-  },
-  
-  currency: {
-    type: String,
-    required: [true, 'La devise est requise'],
-    enum: {
-      values: ['HTG', 'USD'], // Valeurs directes pour éviter erreur
-      message: 'Devise non supportée'
-    },
-    default: 'HTG'
-  },
-  
-  frequency: {
-    type: String,
-    required: [true, 'La fréquence est requise'],
-    enum: {
-      values: ['weekly', 'biweekly', 'monthly', 'quarterly'], // Valeurs directes
-      message: 'Fréquence non valide'
-    },
-    default: 'monthly'
-  },
-  
-  // ===================================================================
-  // PARTICIPANTS
-  // ===================================================================
-  maxParticipants: {
-    type: Number,
-    required: [true, 'Le nombre maximum de participants est requis'],
-    min: [3, 'Minimum 3 participants'],
-    max: [20, 'Maximum 20 participants']
-  },
-  
-  participants: [{
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true
-    },
-    position: {
-      type: Number,
-      required: true,
-      min: 1
-    },
-    joinedAt: {
-      type: Date,
-      default: Date.now
-    },
-    role: {
-      type: String,
-      enum: ['creator', 'participant'],
-      default: 'participant'
-    },
-    paymentStatus: {
-      type: String,
-      enum: ['pending', 'current', 'overdue'],
-      default: 'pending'
-    },
-    hasReceived: {
-      type: Boolean,
-      default: false
-    },
-    receivedDate: Date,
-    receivedAmount: Number,
-    
-    // Statut participant
-    isActive: {
-      type: Boolean,
-      default: true
-    },
-    
-    warningCount: {
-      type: Number,
-      default: 0
-    },
-    
-    lastWarningDate: Date,
-    
-    // Contact info pour ce sol
-    contactInfo: {
-      phone: String,
-      alternatePhone: String,
-      address: String
-    }
-  }],
-  
-  // ===================================================================
-  // STRUCTURE ROUNDS/TOURS - CORRECTION PRINCIPALE
-  // ===================================================================
-  rounds: [{
-    roundNumber: {
-      type: Number,
-      required: true,
-      min: 1
-    },
-    
-    startDate: {
-      type: Date,
-      required: true
-    },
-    
-    endDate: {
-      type: Date,
-      required: true
-    },
-    
-    status: {
-      type: String,
-      enum: ['scheduled', 'pending', 'active', 'completed', 'cancelled'],
-      default: 'scheduled'
-    },
-    
-    // RÉFÉRENCE AU BÉNÉFICIAIRE DU TOUR - CORRECTION ERREUR POPULATE
-    recipient: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      sparse: true
-    },
-    
-    // PAIEMENTS POUR CE TOUR
-    payments: [{
-      payer: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-      },
-      amount: {
-        type: Number,
-        required: true,
-        min: 0
-      },
-      date: {
-        type: Date,
-        default: Date.now
-      },
-      status: {
-        type: String,
-        enum: ['pending', 'completed', 'failed', 'refunded'],
-        default: 'completed'
-      },
-      transactionId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Transaction'
-      },
-      notes: {
-        type: String,
-        maxlength: 200
-      }
-    }],
-    
-    // INFORMATIONS TOUR
-    totalCollected: {
-      type: Number,
-      default: 0
-    },
-    
-    completedDate: {
-      type: Date
-    },
-    
-    transferTransaction: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Transaction'
-    },
-    
-    notes: {
-      type: String,
-      maxlength: 500
-    }
-  }],
-  
-  // ===================================================================
-  // CALENDRIER ET DATES
-  // ===================================================================
-  startDate: {
-    type: Date,
-    required: [true, 'La date de début est requise'],
-    validate: {
-      validator: function(v) {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        return v >= tomorrow;
-      },
-      message: 'La date de début doit être au moins demain'
-    }
-  },
-  
-  actualStartDate: {
-    type: Date
-  },
-  
-  duration: {
-    type: Number,
-    min: [1, 'Durée minimum 1 mois'],
-    max: [24, 'Durée maximum 24 mois']
-  },
-  
-  paymentDay: {
-    type: Number,
-    min: [1, 'Jour de paiement entre 1 et 31'],
-    max: [31, 'Jour de paiement entre 1 et 31'],
-    default: 1
-  },
-  
-  nextPaymentDate: {
-    type: Date
-  },
-  
-  completedDate: {
-    type: Date
-  },
-  
-  // ===================================================================
-  // STATUTS ET CONFIGURATION
-  // ===================================================================
-  status: {
-    type: String,
-    enum: ['recruiting', 'active', 'completed', 'cancelled', 'paused'],
-    default: 'recruiting',
-    index: true
-  },
-  
-  isActive: {
-    type: Boolean,
-    default: true,
-    index: true
-  },
-  
-  interestRate: {
-    type: Number,
-    min: [0, 'Taux d\'intérêt minimum 0%'],
-    max: [10, 'Taux d\'intérêt maximum 10%'],
     default: 0
   },
-  
-  rules: [{
-    type: String,
-    trim: true,
-    maxlength: 200
-  }],
-  
-  // ===================================================================
-  // CODE D'ACCÈS ET SÉCURITÉ
-  // ===================================================================
-  accessCode: {
-    type: String,
+  lastPaymentDate: Date,
+  paymentHistory: [{
+    roundNumber: Number,
+    amount: Number,
+    date: Date,
+    status: String
+  }]
+}, { _id: false });
+
+const paymentSchema = new mongoose.Schema({
+  payer: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  amount: { 
+    type: Number, 
     required: true,
-    unique: true,
-    uppercase: true,
-    minlength: 6,
-    maxlength: 8
+    min: 1
   },
-  
-  isPrivate: {
-    type: Boolean,
-    default: false
+  date: { 
+    type: Date, 
+    default: Date.now 
   },
-  
-  requiresInvitation: {
-    type: Boolean,
-    default: false
+  status: { 
+    type: String, 
+    enum: ['pending', 'completed', 'failed', 'refunded'], 
+    default: 'completed' 
   },
-  
-  invitationCode: {
+  paymentMethod: {
     type: String,
-    sparse: true
+    enum: ['wallet', 'bank_transfer', 'mobile_money', 'cash'],
+    default: 'wallet'
   },
-  
-  // ===================================================================
-  // MÉTRIQUES POUR IA - CORRECTION ERREUR ANALYTICS
-  // ===================================================================
-  metrics: {
-    totalRounds: {
-      type: Number,
-      default: 0
-    },
-    completedRounds: {
-      type: Number,
-      default: 0
-    },
-    successRate: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100
-    },
-    avgPaymentDelay: {
-      type: Number,
-      default: 0
-    },
-    participantRetention: {
-      type: Number,
-      default: 100,
-      min: 0,
-      max: 100
-    },
-    totalCollected: {
-      type: Number,
-      default: 0
-    }
+  transactionId: String,
+  notes: { 
+    type: String, 
+    maxlength: 200 
   },
-  
-  // ===================================================================
-  // NOTIFICATIONS ET RAPPELS
-  // ===================================================================
-  notificationSettings: {
-    enabled: {
-      type: Boolean,
-      default: true
-    },
-    
-    reminderDaysBefore: {
-      type: Number,
-      default: 3,
-      min: 1,
-      max: 7
-    },
-    
-    notifyOnJoin: {
-      type: Boolean,
-      default: true
-    },
-    
-    notifyOnPayment: {
-      type: Boolean,
-      default: true
-    },
-    
-    notifyOnLatePayment: {
-      type: Boolean,
-      default: true
-    }
+  verifiedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
-  
-  // ===================================================================
-  // HISTORIQUE ET ANALYTICS
-  // ===================================================================
-  roundHistory: [{
-    round: {
-      type: Number,
-      required: true
-    },
-    recipientPosition: {
-      type: Number,
-      required: true
-    },
-    recipient: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    },
-    totalCollected: {
-      type: Number,
-      required: true
-    },
-    dateCompleted: {
-      type: Date,
-      default: Date.now
-    },
-    paymentsSummary: {
-      onTime: Number,
-      late: Number,
-      partial: Number,
-      missing: Number
-    },
-    notes: String
-  }],
-  
-  // ===================================================================
-  // DISPUTES ET PROBLÈMES
-  // ===================================================================
-  disputes: [{
-    reportedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true
-    },
-    againstParticipant: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    },
-    type: {
-      type: String,
-      enum: ['late_payment', 'no_payment', 'wrong_amount', 'behavior', 'other'],
-      required: true
-    },
-    description: {
-      type: String,
-      required: true,
-      maxlength: 1000
-    },
-    status: {
-      type: String,
-      enum: ['open', 'investigating', 'resolved', 'closed'],
-      default: 'open'
-    },
-    createdDate: {
-      type: Date,
-      default: Date.now
-    },
-    resolvedDate: Date,
-    resolution: String
-  }],
-  
-  // ===================================================================
-  // MÉTADONNÉES
-  // ===================================================================
-  tags: [{
-    type: String,
-    trim: true,
-    maxlength: [30, 'Un tag ne peut pas dépasser 30 caractères']
-  }],
-  
+  verificationDate: Date
+}, { _id: false });
+
+const roundSchema = new mongoose.Schema({
+  roundNumber: { 
+    type: Number, 
+    required: true,
+    min: 1
+  },
+  startDate: { 
+    type: Date, 
+    required: true 
+  },
+  endDate: { 
+    type: Date, 
+    required: true 
+  },
+  dueDate: {
+    type: Date,
+    required: true
+  },
+  status: { 
+    type: String, 
+    enum: ['scheduled', 'pending', 'active', 'completed', 'cancelled'], 
+    default: 'scheduled' 
+  },
+  recipient: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User' 
+  },
+  expectedAmount: {
+    type: Number,
+    required: true
+  },
+  actualAmount: {
+    type: Number,
+    default: 0
+  },
+  payments: [paymentSchema],
+  completedDate: Date,
+  transferTransaction: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Transaction' 
+  },
   notes: {
     type: String,
-    maxlength: [1000, 'Les notes ne peuvent pas dépasser 1000 caractères']
+    maxlength: 500
+  },
+  isDistributed: {
+    type: Boolean,
+    default: false
+  },
+  distributionDate: Date
+}, { _id: false });
+
+const metricsSchema = new mongoose.Schema({
+  totalCollected: { 
+    type: Number, 
+    default: 0 
+  },
+  totalDistributed: { 
+    type: Number, 
+    default: 0 
+  },
+  completedRounds: { 
+    type: Number, 
+    default: 0 
+  },
+  successRate: { 
+    type: Number, 
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  avgPaymentDelay: { 
+    type: Number, 
+    default: 0 
+  },
+  participantRetention: { 
+    type: Number, 
+    default: 100,
+    min: 0,
+    max: 100
+  },
+  onTimePayments: {
+    type: Number,
+    default: 0
+  },
+  latePayments: {
+    type: Number,
+    default: 0
+  },
+  totalFees: {
+    type: Number,
+    default: 0
+  },
+  averageRoundDuration: {
+    type: Number,
+    default: 0
+  }
+}, { _id: false });
+
+const ruleSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: true,
+    maxlength: 100
+  },
+  description: {
+    type: String,
+    required: true,
+    maxlength: 500
+  },
+  isEnforced: {
+    type: Boolean,
+    default: true
+  },
+  penaltyAmount: {
+    type: Number,
+    default: 0
+  },
+  penaltyDescription: {
+    type: String,
+    maxlength: 200
+  }
+}, { _id: false });
+
+// ===================================================================
+// SCHEMA PRINCIPAL
+// ===================================================================
+
+const solSchema = new mongoose.Schema({
+  // Informations de base
+  creator: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
+  name: { 
+    type: String, 
+    required: true, 
+    trim: true, 
+    maxlength: 100 
+  },
+  description: { 
+    type: String, 
+    trim: true, 
+    maxlength: 500 
   },
   
-  lastActivityDate: {
-    type: Date,
-    default: Date.now
-  }
+  // Type et configuration financière
+  type: { 
+    type: String, 
+    enum: ['classic', 'investment', 'emergency', 'project', 'business'], 
+    required: true 
+  },
+  contributionAmount: { 
+    type: Number, 
+    required: true, 
+    min: 100 
+  },
+  currency: { 
+    type: String, 
+    enum: ['HTG', 'USD'], 
+    default: 'HTG' 
+  },
+  maxParticipants: { 
+    type: Number, 
+    required: true, 
+    min: 3, 
+    max: 20 
+  },
   
-}, {
-  timestamps: true,
-  toJSON: { 
-    virtuals: true,
-    transform: function(doc, ret) {
-      delete ret.__v;
-      return ret;
+  // Calendrier et fréquence
+  frequency: { 
+    type: String, 
+    enum: ['weekly', 'biweekly', 'monthly', 'quarterly'], 
+    required: true 
+  },
+  startDate: { 
+    type: Date, 
+    required: true 
+  },
+  actualStartDate: Date,
+  duration: {
+    type: Number,
+    min: 1,
+    max: 36
+  },
+  paymentDay: { 
+    type: Number, 
+    min: 1, 
+    max: 31, 
+    default: 1 
+  },
+  
+  // Taux et frais
+  interestRate: { 
+    type: Number, 
+    min: 0, 
+    max: 100, 
+    default: 0 
+  },
+  serviceFee: {
+    type: Number,
+    min: 0,
+    max: 10,
+    default: 0
+  },
+  lateFee: {
+    type: Number,
+    min: 0,
+    max: 20,
+    default: 5
+  },
+  
+  // Gestion accès et confidentialité
+  accessCode: { 
+    type: String, 
+    unique: true, 
+    uppercase: true,
+    sparse: true
+  },
+  isPrivate: { 
+    type: Boolean, 
+    default: false 
+  },
+  requiresApproval: {
+    type: Boolean,
+    default: false
+  },
+  invitedUsers: [{
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    invitedAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' }
+  }],
+  
+  // Participants et rounds
+  participants: [participantSchema],
+  rounds: [roundSchema],
+  
+  // Règles et conditions
+  rules: [ruleSchema],
+  tags: [String],
+  
+  // Statut et workflow
+  status: { 
+    type: String, 
+    enum: ['draft', 'recruiting', 'active', 'completed', 'cancelled', 'paused'], 
+    default: 'recruiting' 
+  },
+  statusHistory: [{
+    status: String,
+    date: { type: Date, default: Date.now },
+    reason: String,
+    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+  
+  // Métriques et analytics
+  metrics: metricsSchema,
+  
+  // Dates importantes
+  lastActivityDate: { 
+    type: Date, 
+    default: Date.now 
+  },
+  completedDate: Date,
+  cancelledDate: Date,
+  cancellationReason: String,
+  nextPaymentDate: Date,
+  
+  // Sécurité et modération
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  moderationStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected', 'under_review'],
+    default: 'approved'
+  },
+  moderatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  moderationNotes: String,
+  
+  // Métadonnées
+  location: {
+    city: String,
+    region: String,
+    country: {
+      type: String,
+      default: 'Haiti'
     }
   },
+  preferredLanguage: {
+    type: String,
+    default: 'fr'
+  }
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
 
 // ===================================================================
-// VIRTUELS (champs calculés)
+// VIRTUALS
 // ===================================================================
-solSchema.virtual('currentParticipantCount').get(function() {
-  return this.participants.filter(p => p.isActive).length;
+
+solSchema.virtual('participantCount').get(function() {
+  return this.participants.length;
 });
 
-solSchema.virtual('totalAmount').get(function() {
-  return this.contributionAmount * this.currentParticipantCount;
+solSchema.virtual('spotsLeft').get(function() {
+  return this.maxParticipants - this.participants.length;
 });
 
-solSchema.virtual('isFull').get(function() {
-  return this.currentParticipantCount >= this.maxParticipants;
-});
-
-solSchema.virtual('isCompleted').get(function() {
-  return this.status === 'completed';
+solSchema.virtual('totalValue').get(function() {
+  return this.contributionAmount * this.maxParticipants;
 });
 
 solSchema.virtual('progressPercentage').get(function() {
   if (!this.rounds || this.rounds.length === 0) return 0;
-  const completedRounds = this.rounds.filter(r => r.status === 'completed').length;
-  return Math.round((completedRounds / this.rounds.length) * 100);
+  const completed = this.rounds.filter(r => r.status === 'completed').length;
+  return Math.round((completed / this.rounds.length) * 100);
+});
+
+solSchema.virtual('isFull').get(function() {
+  return this.participants.length >= this.maxParticipants;
+});
+
+solSchema.virtual('canJoin').get(function() {
+  return this.status === 'recruiting' && !this.isFull;
+});
+
+solSchema.virtual('nextRound').get(function() {
+  if (!this.rounds) return null;
+  return this.rounds.find(r => 
+    r.status === 'pending' || r.status === 'active'
+  );
+});
+
+solSchema.virtual('currentRound').get(function() {
+  if (!this.rounds) return null;
+  return this.rounds.find(r => r.status === 'active');
 });
 
 // ===================================================================
-// MÉTHODES INSTANCE
+// MÉTHODES D'INSTANCE
 // ===================================================================
 
-// Méthode pour obtenir prochaine date de paiement
-solSchema.methods.getNextPaymentDate = function() {
-  if (!this.rounds || this.rounds.length === 0) return null;
-  
-  const activeRound = this.rounds.find(r => r.status === 'active' || r.status === 'pending');
-  return activeRound ? activeRound.endDate : null;
-};
-
-// Méthode pour calculer date de fin
+/**
+ * Calculer la date de fin estimée du sol
+ */
 solSchema.methods.calculateEndDate = function() {
-  if (!this.rounds || this.rounds.length === 0) return null;
+  if (!this.rounds || this.rounds.length === 0) {
+    return this.startDate;
+  }
   
   const lastRound = this.rounds[this.rounds.length - 1];
-  return lastRound ? lastRound.endDate : null;
+  return lastRound.endDate || lastRound.startDate;
 };
 
-// Méthode pour calculer jours restants
+/**
+ * Obtenir la date du prochain paiement
+ */
+solSchema.methods.getNextPaymentDate = function() {
+  if (!this.rounds) return null;
+  
+  const activeRound = this.rounds.find(r => 
+    r.status === 'active' || r.status === 'pending'
+  );
+  
+  return activeRound ? activeRound.dueDate : null;
+};
+
+/**
+ * Calculer les jours restants
+ */
 solSchema.methods.calculateDaysRemaining = function() {
   const endDate = this.calculateEndDate();
-  if (!endDate) return null;
+  if (!endDate) return 0;
   
   const now = new Date();
-  const diffTime = endDate.getTime() - now.getTime();
+  const diffTime = endDate - now;
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 };
 
-// Ajouter participant
-solSchema.methods.addParticipant = async function(userData, position = null) {
-  if (this.isFull) {
-    throw new Error('Le sol est complet');
-  }
+/**
+ * Calculer les jours jusqu'au prochain paiement
+ */
+solSchema.methods.daysUntilNextPayment = function() {
+  const nextPayment = this.getNextPaymentDate();
+  if (!nextPayment) return null;
   
-  // Vérifier si l'utilisateur est déjà participant
-  const existingParticipant = this.participants.find(p => p.user.toString() === userData.userId.toString());
-  if (existingParticipant) {
-    throw new Error('L\'utilisateur participe déjà à ce sol');
-  }
-  
-  // Assigner position automatiquement si pas spécifiée
-  if (!position) {
-    const usedPositions = this.participants.map(p => p.position);
-    for (let i = 1; i <= this.maxParticipants; i++) {
-      if (!usedPositions.includes(i)) {
-        position = i;
-        break;
-      }
-    }
-  }
-  
-  const participant = {
-    user: userData.userId,
-    position: position,
-    joinedAt: new Date(),
-    contactInfo: userData.contactInfo || {}
-  };
-  
-  this.participants.push(participant);
-  
-  // Auto-start si configuré et conditions remplies
-  if (this.isFull && this.status === 'recruiting') {
-    this.status = 'active';
-  }
-  
-  return this.save();
+  const now = new Date();
+  const diffTime = nextPayment - now;
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 };
 
-// Supprimer participant
-solSchema.methods.removeParticipant = function(participantUserId, reason = 'user_request') {
-  const participantIndex = this.participants.findIndex(p => p.user.toString() === participantUserId.toString());
+/**
+ * Vérifier si un utilisateur est participant
+ */
+solSchema.methods.isParticipant = function(userId) {
+  return this.participants.some(p => 
+    p.user && p.user.toString() === userId.toString()
+  );
+};
+
+/**
+ * Obtenir la position d'un utilisateur
+ */
+solSchema.methods.getUserPosition = function(userId) {
+  const participant = this.participants.find(p => 
+    p.user && p.user.toString() === userId.toString()
+  );
+  return participant ? participant.position : null;
+};
+
+/**
+ * Obtenir le round d'un utilisateur
+ */
+solSchema.methods.getUserRound = function(userId) {
+  const position = this.getUserPosition(userId);
+  if (!position || !this.rounds) return null;
   
-  if (participantIndex === -1) {
-    throw new Error('Participant non trouvé');
+  return this.rounds[position - 1];
+};
+
+/**
+ * Vérifier si un utilisateur a payé pour le round actuel
+ */
+solSchema.methods.hasPaidCurrentRound = function(userId) {
+  const currentRound = this.currentRound;
+  if (!currentRound) return false;
+  
+  return currentRound.payments.some(payment =>
+    payment.payer && payment.payer.toString() === userId.toString() &&
+    payment.status === 'completed'
+  );
+};
+
+/**
+ * Calculer le montant total collecté
+ */
+solSchema.methods.calculateTotalCollected = function() {
+  if (!this.rounds) return 0;
+  
+  return this.rounds.reduce((total, round) => {
+    if (round.status === 'completed') {
+      return total + round.actualAmount;
+    }
+    return total;
+  }, 0);
+};
+
+/**
+ * Calculer le montant dû par un utilisateur
+ */
+solSchema.methods.calculateUserBalance = function(userId) {
+  const participant = this.participants.find(p => 
+    p.user && p.user.toString() === userId.toString()
+  );
+  
+  if (!participant) return 0;
+  
+  const roundsPaid = this.rounds.reduce((count, round) => {
+    const hasPaid = round.payments.some(payment =>
+      payment.payer && payment.payer.toString() === userId.toString() &&
+      payment.status === 'completed'
+    );
+    return hasPaid ? count + 1 : count;
+  }, 0);
+  
+  const roundsOwed = this.rounds.filter(round => 
+    round.status === 'active' || round.status === 'pending'
+  ).length;
+  
+  const amountOwed = roundsOwed * this.contributionAmount;
+  const amountPaid = roundsPaid * this.contributionAmount;
+  
+  return amountOwed - amountPaid;
+};
+
+/**
+ * Générer le calendrier des rounds
+ */
+solSchema.methods.generateRounds = function() {
+  const rounds = [];
+  let currentDate = new Date(this.actualStartDate || this.startDate);
+  
+  const frequencyDays = {
+    'weekly': 7,
+    'biweekly': 14,
+    'monthly': 30,
+    'quarterly': 90
+  };
+  
+  const daysToAdd = frequencyDays[this.frequency] || 30;
+  
+  for (let i = 0; i < this.maxParticipants; i++) {
+    const startDate = new Date(currentDate);
+    const endDate = new Date(currentDate.getTime() + (daysToAdd * 24 * 60 * 60 * 1000));
+    const dueDate = new Date(startDate);
+    dueDate.setDate(dueDate.getDate() + 7); // Paiement dû 7 jours après le début du round
+    
+    rounds.push({
+      roundNumber: i + 1,
+      startDate: startDate,
+      endDate: endDate,
+      dueDate: dueDate,
+      status: i === 0 ? 'pending' : 'scheduled',
+      expectedAmount: this.contributionAmount * this.maxParticipants,
+      actualAmount: 0,
+      recipient: this.participants[i]?.user || null,
+      payments: []
+    });
+    
+    currentDate = new Date(endDate);
   }
   
-  const participant = this.participants[participantIndex];
-  
-  // Vérifier si le participant a déjà reçu
-  if (participant.hasReceived) {
-    throw new Error('Impossible de supprimer un participant qui a déjà reçu');
+  return rounds;
+};
+
+/**
+ * Activer le prochain round
+ */
+solSchema.methods.activateNextRound = function() {
+  const pendingRound = this.rounds.find(r => r.status === 'pending');
+  if (pendingRound) {
+    pendingRound.status = 'active';
+    this.nextPaymentDate = pendingRound.dueDate;
+    return pendingRound;
   }
-  
-  this.participants.splice(participantIndex, 1);
-  
-  return this.save();
+  return null;
+};
+
+/**
+ * Marquer un round comme complété
+ */
+solSchema.methods.completeRound = function(roundNumber) {
+  const round = this.rounds.find(r => r.roundNumber === roundNumber);
+  if (round) {
+    round.status = 'completed';
+    round.completedDate = new Date();
+    round.actualAmount = round.payments.reduce((sum, payment) => sum + payment.amount, 0);
+    
+    // Mettre à jour les métriques
+    this.metrics.completedRounds += 1;
+    this.metrics.totalCollected += round.actualAmount;
+    
+    return round;
+  }
+  return null;
 };
 
 // ===================================================================
 // MÉTHODES STATIQUES
 // ===================================================================
 
-// Sols d'un utilisateur (créés ou participant)
-solSchema.statics.findByUser = function(userId) {
+/**
+ * Trouver un sol par son code d'accès
+ */
+solSchema.statics.findByAccessCode = function(accessCode) {
+  return this.findOne({ 
+    accessCode: accessCode.toUpperCase(), 
+    status: 'recruiting',
+    isActive: true
+  });
+};
+
+/**
+ * Trouver les sols actifs d'un utilisateur
+ */
+solSchema.statics.findUserActiveSols = function(userId) {
   return this.find({
     $or: [
       { creator: userId },
       { 'participants.user': userId }
     ],
+    status: { $in: ['recruiting', 'active'] },
     isActive: true
-  }).populate('creator', 'firstName lastName')
-    .populate('participants.user', 'firstName lastName phone')
-    .sort({ lastActivityDate: -1 });
-};
-
-// Sols nécessitant paiement
-solSchema.statics.findDuePayments = function(userId) {
-  const today = new Date();
-  
-  return this.find({
-    'participants.user': userId,
-    status: 'active',
-    nextPaymentDate: { $lte: today }
   });
 };
 
-// Rechercher sol par code
-solSchema.statics.findByAccessCode = function(accessCode) {
-  return this.findOne({ 
-    accessCode: accessCode.toUpperCase(),
-    status: { $in: ['recruiting', 'active'] }
-  }).populate('creator', 'firstName lastName');
-};
-
-// Sols ouverts pour rejoindre
-solSchema.statics.findOpenSols = function(filters = {}) {
+/**
+ * Trouver les sols disponibles pour rejoindre
+ */
+solSchema.statics.findAvailableSols = function(filters = {}) {
   const query = {
     status: 'recruiting',
+    isPrivate: false,
     isActive: true,
-    isPrivate: false
+    moderationStatus: 'approved'
   };
   
   if (filters.type) query.type = filters.type;
   if (filters.currency) query.currency = filters.currency;
-  if (filters.maxAmount) query.contributionAmount = { $lte: filters.maxAmount };
+  if (filters.minAmount) query.contributionAmount = { $gte: filters.minAmount };
+  if (filters.maxAmount) query.contributionAmount = { ...query.contributionAmount, $lte: filters.maxAmount };
+  if (filters.region) query['location.region'] = filters.region;
   
   return this.find(query)
-    .populate('creator', 'firstName lastName region')
+    .populate('creator', 'firstName lastName region rating')
+    .populate('participants.user', 'firstName lastName')
     .sort({ createdAt: -1 });
 };
 
-// Analytics sols utilisateur
-solSchema.statics.getUserSolStats = function(userId) {
-  return this.aggregate([
+/**
+ * Générer un code d'accès unique
+ */
+solSchema.statics.generateUniqueAccessCode = async function() {
+  let code;
+  let exists = true;
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  
+  while (exists) {
+    code = '';
+    for (let i = 0; i < 6; i++) {
+      code += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+    
+    exists = await this.findOne({ accessCode: code });
+  }
+  
+  return code;
+};
+
+/**
+ * Obtenir les statistiques globales des sols
+ */
+solSchema.statics.getGlobalStats = async function() {
+  const stats = await this.aggregate([
     {
-      $match: {
-        $or: [
-          { creator: new mongoose.Types.ObjectId(userId) },
-          { 'participants.user': new mongoose.Types.ObjectId(userId) }
-        ]
-      }
+      $match: { isActive: true }
     },
     {
       $group: {
         _id: null,
         totalSols: { $sum: 1 },
+        totalParticipants: { $sum: { $size: '$participants' } },
+        totalAmount: { $sum: { $multiply: ['$contributionAmount', '$maxParticipants'] } },
         activeSols: {
-          $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] }
+          $sum: { $cond: [{ $in: ['$status', ['recruiting', 'active']] }, 1, 0] }
         },
         completedSols: {
           $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
-        },
-        totalContributed: { $sum: '$contributionAmount' },
-        avgContribution: { $avg: '$contributionAmount' }
+        }
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        totalSols: 1,
+        totalParticipants: 1,
+        totalAmount: { $round: ['$totalAmount', 2] },
+        activeSols: 1,
+        completedSols: 1,
+        averageParticipants: { $round: [{ $divide: ['$totalParticipants', '$totalSols'] }, 1] }
       }
     }
   ]);
+  
+  return stats.length > 0 ? stats[0] : {
+    totalSols: 0,
+    totalParticipants: 0,
+    totalAmount: 0,
+    activeSols: 0,
+    completedSols: 0,
+    averageParticipants: 0
+  };
 };
 
 // ===================================================================
-// INDEX POUR PERFORMANCE
+// MIDDLEWARE (HOOKS)
 // ===================================================================
-solSchema.index({ creator: 1, status: 1 });
-solSchema.index({ 'participants.user': 1, status: 1 });
-solSchema.index({ accessCode: 1 });
-solSchema.index({ status: 1, isPrivate: 1 });
+
+// Avant la sauvegarde, générer les rounds si nécessaire
+solSchema.pre('save', function(next) {
+  // Générer le code d'accès si nouveau sol
+  if (this.isNew && !this.accessCode) {
+    this.constructor.generateUniqueAccessCode()
+      .then(code => {
+        this.accessCode = code;
+        next();
+      })
+      .catch(next);
+    return;
+  }
+  
+  // Générer les rounds si le sol est complet et passe en actif
+  if (this.isModified('status') && this.status === 'active' && this.participants.length === this.maxParticipants) {
+    if (!this.rounds || this.rounds.length === 0) {
+      this.rounds = this.generateRounds();
+      this.actualStartDate = new Date();
+    }
+  }
+  
+  // Mettre à jour la date de dernière activité
+  if (this.isModified() && !this.isModified('lastActivityDate')) {
+    this.lastActivityDate = new Date();
+  }
+  
+  next();
+});
+
+// Après la sauvegarde, mettre à jour les métriques
+solSchema.post('save', function(doc) {
+  if (doc.rounds && doc.rounds.length > 0) {
+    const completedRounds = doc.rounds.filter(r => r.status === 'completed').length;
+    const totalRounds = doc.rounds.length;
+    
+    doc.metrics.completedRounds = completedRounds;
+    doc.metrics.successRate = totalRounds > 0 ? Math.round((completedRounds / totalRounds) * 100) : 0;
+    doc.metrics.totalCollected = doc.calculateTotalCollected();
+    
+    // Ne pas sauvegarder à nouveau pour éviter la recursion
+    if (doc.isModified('metrics')) {
+      doc.constructor.updateOne(
+        { _id: doc._id },
+        { $set: { metrics: doc.metrics } }
+      ).exec();
+    }
+  }
+});
+
+// ===================================================================
+// INDEXES POUR PERFORMANCE
+// ===================================================================
+
+solSchema.index({ creator: 1 });
+solSchema.index({ status: 1 });
+solSchema.index({ accessCode: 1 }, { unique: true, sparse: true });
+solSchema.index({ 'participants.user': 1 });
+solSchema.index({ createdAt: -1 });
 solSchema.index({ lastActivityDate: -1 });
+solSchema.index({ type: 1, status: 1 });
+solSchema.index({ contributionAmount: 1 });
+solSchema.index({ 'location.region': 1 });
+solSchema.index({ status: 1, isPrivate: 1, moderationStatus: 1 });
 
-// ===================================================================
-// EXPORT DU MODÈLE
-// ===================================================================
-const Sol = mongoose.model('Sol', solSchema);
+// Index composé pour les recherches de disponibilité
+solSchema.index({ 
+  status: 1, 
+  isPrivate: 1, 
+  currency: 1, 
+  contributionAmount: 1,
+  'location.region': 1 
+});
 
-module.exports = Sol;
+module.exports = mongoose.model('Sol', solSchema);

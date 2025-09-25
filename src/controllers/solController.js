@@ -1,6 +1,6 @@
 // src/controllers/solController.js
 // Controller pour gestion sols/tontines - FinApp Haiti
-// Version complète finale avec toutes les corrections
+// Version complète corrigée avec toutes les corrections
 
 const Sol = require('../models/Sol');
 const User = require('../models/User');
@@ -10,6 +10,26 @@ const { body, validationResult, param, query } = require('express-validator');
 const mongoose = require('mongoose');
 
 class SolController {
+
+  // ===================================================================
+  // MÉTHODE UTILITAIRE POUR COMPARAISON SÉCURISÉE DES IDs
+  // ===================================================================
+
+  static compareUserIds(id1, id2) {
+    try {
+      // Gérer les cas où id1 ou id2 pourraient être null/undefined
+      if (!id1 || !id2) return false;
+      
+      // Convertir en string quel que soit le type (ObjectId, string, etc.)
+      const str1 = id1.toString ? id1.toString() : String(id1);
+      const str2 = id2.toString ? id2.toString() : String(id2);
+      
+      return str1 === str2;
+    } catch (error) {
+      console.error('❌ Erreur comparaison IDs:', error);
+      return false;
+    }
+  }
 
   // ===================================================================
   // 1. CRÉATION SOLS
@@ -58,9 +78,9 @@ class SolController {
         duration, paymentDay: paymentDay || 1, interestRate: interestRate || 0,
         tags: tags || [], isPrivate: isPrivate || false, rules: rules || [],
         accessCode, status: 'recruiting',
-        
+
         rounds: this.generateRounds(maxParticipants, new Date(startDate), frequency),
-        
+
         participants: [{
           user: req.user.userId,
           position: 1,
@@ -68,7 +88,7 @@ class SolController {
           role: 'creator',
           paymentStatus: 'pending'
         }],
-        
+
         metrics: {
           totalRounds: maxParticipants,
           completedRounds: 0,
@@ -89,7 +109,7 @@ class SolController {
       res.status(201).json({
         success: true,
         message: 'Sol créé avec succès',
-        data: { 
+        data: {
           sol: newSol,
           accessCode: newSol.accessCode,
           nextSteps: [
@@ -103,7 +123,8 @@ class SolController {
 
     } catch (error) {
       console.error('❌ Erreur création sol:', error.message);
-      
+      console.error('Stack trace:', error.stack);
+
       if (error.code === 11000) {
         return res.status(400).json({
           success: false,
@@ -115,7 +136,8 @@ class SolController {
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la création du sol',
-        error: 'sol_creation_error'
+        error: 'sol_creation_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
@@ -126,7 +148,7 @@ class SolController {
 
   static getUserSols = async (req, res) => {
     try {
-      const { 
+      const {
         status = 'all', type, page = 1, limit = 20,
         sortBy = 'lastActivityDate', sortOrder = 'desc', includeAnalytics = false
       } = req.query;
@@ -156,25 +178,25 @@ class SolController {
       ]);
 
       const enrichedSols = sols.map(sol => {
-        const userParticipation = sol.participants.find(p => 
-          p.user._id.toString() === req.user.userId
+        const userParticipation = sol.participants.find(p =>
+          this.compareUserIds(p.user._id, req.user.userId)
         );
         const nextRound = sol.rounds.find(r => r.status === 'pending');
-        const nextPaymentDue = sol.getNextPaymentDate();
+        const nextPaymentDue = sol.getNextPaymentDate ? sol.getNextPaymentDate() : null;
 
         return {
           ...sol.toJSON(),
-          userRole: sol.creator._id.toString() === req.user.userId.toString() ? 'creator' : 'participant',
+          userRole: this.compareUserIds(sol.creator._id, req.user.userId) ? 'creator' : 'participant',
           userPosition: userParticipation?.position,
           nextRoundIndex: nextRound ? sol.rounds.indexOf(nextRound) + 1 : null,
-          daysUntilNextPayment: nextPaymentDue ? 
+          daysUntilNextPayment: nextPaymentDue ?
             Math.ceil((nextPaymentDue - new Date()) / (1000 * 60 * 60 * 24)) : null,
           turnsUntilMe: this.calculateTurnsUntilUser(sol, req.user.userId)
         };
       });
 
       let analytics = null;
-      if (includeAnalytics) {
+      if (includeAnalytics === 'true') {
         analytics = await this.generateUserSolAnalytics(req.user.userId, sols);
       }
 
@@ -199,10 +221,13 @@ class SolController {
 
     } catch (error) {
       console.error('❌ Erreur récupération sols utilisateur:', error.message);
+      console.error('Stack trace:', error.stack);
+      
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la récupération des sols',
-        error: 'sols_fetch_error'
+        error: 'sols_fetch_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
@@ -211,6 +236,15 @@ class SolController {
     try {
       const { id } = req.params;
       const { includeHistory = false } = req.query;
+
+      // CORRECTION : Validation ObjectId
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: 'ID de sol invalide',
+          error: 'invalid_sol_id'
+        });
+      }
 
       const sol = await Sol.findById(id)
         .populate('creator', 'firstName lastName email phone')
@@ -226,8 +260,11 @@ class SolController {
         });
       }
 
-      const hasAccess = sol.creator._id.toString() === req.user.userId.toString() ||
-                       sol.participants.some(p => p.user._id.toString() === req.user.userId.toString());
+      // CORRECTION : Utilisation de la fonction de comparaison
+      const hasAccess = this.compareUserIds(sol.creator._id, req.user.userId) ||
+        sol.participants.some(p => 
+          p.user && this.compareUserIds(p.user._id, req.user.userId)
+        );
 
       if (!hasAccess) {
         return res.status(403).json({
@@ -237,52 +274,57 @@ class SolController {
         });
       }
 
+      // CORRECTION : Calculs sécurisés
+      const completedRounds = sol.rounds ? sol.rounds.filter(r => r.status === 'completed').length : 0;
+      const totalRounds = sol.rounds ? sol.rounds.length : 0;
+
       const enrichedSol = {
         ...sol.toJSON(),
-        userRole: sol.creator._id.toString() === req.user.userId.toString() ? 'creator' : 'participant',
+        userRole: this.compareUserIds(sol.creator._id, req.user.userId) ? 
+          'creator' : 'participant',
         progress: {
-          completedRounds: sol.rounds.filter(r => r.status === 'completed').length,
-          totalRounds: sol.rounds.length,
-          percentage: Math.round((sol.rounds.filter(r => r.status === 'completed').length / sol.rounds.length) * 100)
+          completedRounds: completedRounds,
+          totalRounds: totalRounds,
+          percentage: totalRounds > 0 ? Math.round((completedRounds / totalRounds) * 100) : 0
         },
         financial: {
-          totalContributed: sol.contributionAmount * sol.rounds.filter(r => r.status === 'completed').length,
-          expectedTotal: sol.contributionAmount * sol.rounds.length,
-          pendingAmount: sol.contributionAmount * sol.rounds.filter(r => r.status === 'pending').length
+          totalContributed: sol.contributionAmount * completedRounds,
+          expectedTotal: sol.contributionAmount * totalRounds,
+          pendingAmount: sol.contributionAmount * (totalRounds - completedRounds)
         },
         timeline: {
-          nextPaymentDate: sol.getNextPaymentDate(),
-          estimatedEndDate: sol.calculateEndDate(),
-          daysRemaining: sol.calculateDaysRemaining()
+          nextPaymentDate: sol.getNextPaymentDate ? sol.getNextPaymentDate() : null,
+          estimatedEndDate: sol.calculateEndDate ? sol.calculateEndDate() : null,
+          daysRemaining: sol.calculateDaysRemaining ? sol.calculateDaysRemaining() : null
         }
       };
 
       let transactionHistory = null;
-      if (includeHistory) {
+      if (includeHistory === 'true') {
         transactionHistory = await Transaction.find({
           'metadata.solId': sol._id,
           user: req.user.userId
         }).sort({ date: -1 }).limit(50);
       }
 
-      await this.collectViewAnalytics(req.user.userId, sol._id);
-
       res.status(200).json({
         success: true,
         data: {
           sol: enrichedSol,
-          transactionHistory: transactionHistory,
-          recommendations: await this.generateSolRecommendations(sol, req.user.userId)
+          transactionHistory: transactionHistory
         },
         timestamp: new Date().toISOString()
       });
 
     } catch (error) {
       console.error('❌ Erreur récupération sol:', error.message);
+      console.error('Stack trace:', error.stack);
+      
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la récupération du sol',
-        error: 'sol_fetch_error'
+        error: 'sol_fetch_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
@@ -303,7 +345,14 @@ class SolController {
       }
 
       const { accessCode } = req.body;
-      const sol = await Sol.findByAccessCode(accessCode);
+      
+      // CORRECTION : Utiliser findOne au lieu de méthode statique inexistante
+      const sol = await Sol.findOne({ 
+        accessCode: accessCode.toUpperCase(), 
+        status: 'recruiting' 
+      })
+      .populate('participants.user', 'firstName lastName')
+      .populate('creator', 'firstName lastName');
 
       if (!sol) {
         return res.status(404).json({
@@ -329,7 +378,10 @@ class SolController {
         });
       }
 
-      const alreadyMember = sol.participants.some(p => p.user.toString() === req.user.userId.toString());
+      // CORRECTION : Utilisation de la fonction de comparaison
+      const alreadyMember = sol.participants.some(p => 
+        this.compareUserIds(p.user._id, req.user.userId)
+      );
 
       if (alreadyMember) {
         return res.status(400).json({
@@ -340,6 +392,17 @@ class SolController {
       }
 
       const newPosition = sol.participants.length + 1;
+      
+      // CORRECTION : Vérification de sécurité
+      if (newPosition > sol.maxParticipants) {
+        return res.status(400).json({
+          success: false,
+          message: 'Erreur: position invalide',
+          error: 'position_overflow'
+        });
+      }
+
+      // Ajouter le participant
       sol.participants.push({
         user: req.user.userId,
         position: newPosition,
@@ -348,17 +411,22 @@ class SolController {
         paymentStatus: 'pending'
       });
 
-      if (sol.rounds[newPosition - 1]) {
+      // CORRECTION : Assigner le bénéficiaire au round correspondant
+      if (sol.rounds && sol.rounds.length >= newPosition) {
         sol.rounds[newPosition - 1].recipient = req.user.userId;
       }
 
+      // Vérifier si le sol est complet
       if (sol.participants.length === sol.maxParticipants) {
         sol.status = 'active';
         sol.actualStartDate = new Date();
         await this.schedulePaymentNotifications(sol);
       }
 
+      sol.lastActivityDate = new Date();
       await sol.save();
+
+      // Re-peupler pour avoir les données fraîches
       await sol.populate([
         { path: 'creator', select: 'firstName lastName' },
         { path: 'participants.user', select: 'firstName lastName' }
@@ -370,7 +438,12 @@ class SolController {
         success: true,
         message: 'Vous avez rejoint le sol avec succès',
         data: {
-          sol: sol,
+          sol: {
+            _id: sol._id,
+            name: sol.name,
+            status: sol.status,
+            participants: sol.participants
+          },
           yourPosition: newPosition,
           yourRoundNumber: newPosition,
           status: sol.status,
@@ -388,10 +461,13 @@ class SolController {
 
     } catch (error) {
       console.error('❌ Erreur rejoindre sol:', error.message);
+      console.error('Stack trace:', error.stack);
+      
       res.status(500).json({
         success: false,
         message: 'Erreur lors de l\'adhésion au sol',
-        error: 'sol_join_error'
+        error: 'sol_join_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
@@ -400,6 +476,15 @@ class SolController {
     try {
       const { id } = req.params;
       const { reason } = req.body;
+
+      // CORRECTION : Validation ObjectId
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: 'ID de sol invalide',
+          error: 'invalid_sol_id'
+        });
+      }
 
       const sol = await Sol.findById(id);
 
@@ -411,7 +496,11 @@ class SolController {
         });
       }
 
-      const participantIndex = sol.participants.findIndex(p =>  p.user.toString() === req.user.userId.toString());
+      // CORRECTION : Utilisation de la fonction de comparaison
+      const participantIndex = sol.participants.findIndex(p =>
+        this.compareUserIds(p.user, req.user.userId)
+      );
+
       if (participantIndex === -1) {
         return res.status(400).json({
           success: false,
@@ -423,7 +512,8 @@ class SolController {
       const participant = sol.participants[participantIndex];
 
       if (sol.status === 'active') {
-        if (sol.creator.toString() === req.user.userId) {
+        // CORRECTION : Utilisation de la fonction de comparaison
+        if (this.compareUserIds(sol.creator, req.user.userId)) {
           return res.status(400).json({
             success: false,
             message: 'Le créateur ne peut pas quitter un sol actif',
@@ -449,19 +539,32 @@ class SolController {
         });
       }
 
+      // Supprimer le participant
       sol.participants.splice(participantIndex, 1);
+
+      // Réorganiser les positions des participants restants
       sol.participants.forEach((p, index) => {
         p.position = index + 1;
       });
 
-      sol.rounds = this.regenerateRounds(sol);
-
-      if (sol.participants.length < 3) {
-        sol.status = 'cancelled';
-        sol.cancellationReason = 'Insufficient participants';
+      // Regénérer les rounds avec le nouveau nombre de participants
+      if (sol.participants.length > 0) {
+        sol.rounds = this.regenerateRounds(sol);
       }
 
+      // Vérifier si le sol doit être annulé (moins de 3 participants)
+      if (sol.participants.length < 3) {
+        sol.status = 'cancelled';
+        sol.cancellationReason = 'Nombre insuffisant de participants';
+        sol.cancelledDate = new Date();
+      }
+
+      // Mettre à jour la date de dernière activité
+      sol.lastActivityDate = new Date();
+
       await sol.save();
+
+      // Collecter analytics
       await this.collectLeaveAnalytics(req.user.userId, sol, reason);
 
       res.status(200).json({
@@ -470,17 +573,24 @@ class SolController {
         data: {
           solStatus: sol.status,
           remainingParticipants: sol.participants.length,
-          reason: reason
+          reason: reason,
+          cancellation: sol.status === 'cancelled' ? {
+            reason: sol.cancellationReason,
+            date: sol.cancelledDate
+          } : null
         },
         timestamp: new Date().toISOString()
       });
 
     } catch (error) {
       console.error('❌ Erreur quitter sol:', error.message);
+      console.error('Stack trace:', error.stack);
+      
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la sortie du sol',
-        error: 'sol_leave_error'
+        error: 'sol_leave_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
@@ -489,204 +599,234 @@ class SolController {
   // 4. GESTION PAIEMENTS
   // ===================================================================
 
-  // 🔧 MÉTHODE makePayment CORRIGÉE
-// Remplacez votre méthode makePayment par cette version corrigée
+  static makePayment = async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { accountId, amount, roundIndex, notes } = req.body;
 
-static makePayment = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { accountId, amount, roundIndex, notes } = req.body;
-
-    const sol = await Sol.findById(id).populate('participants.user', 'firstName lastName');
-
-    if (!sol) {
-      return res.status(404).json({
-        success: false,
-        message: 'Sol introuvable',
-        error: 'sol_not_found'
-      });
-    }
-
-    // ✅ FIX 1: Vérification d'accès avec .toString() sur req.user.userId
-    const hasAccess = sol.creator._id.toString() === req.user.userId.toString() ||
-                     sol.participants.some(p => p.user._id.toString() === req.user.userId.toString());
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Accès non autorisé à ce sol',
-        error: 'unauthorized_sol_access'
-      });
-    }
-
-    // ✅ FIX 2: Recherche participant avec .toString() sur req.user.userId
-    const participant = sol.participants.find(p => 
-      p.user._id.toString() === req.user.userId.toString()
-    );
-
-    if (!participant) {
-      return res.status(400).json({
-        success: false,
-        message: 'Vous ne participez pas à ce sol',
-        error: 'not_participant'
-      });
-    }
-
-    const account = await Account.findOne({
-      _id: accountId,
-      user: req.user.userId,
-      isActive: true
-    });
-
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: 'Compte introuvable',
-        error: 'account_not_found'
-      });
-    }
-
-    if (amount !== sol.contributionAmount) {
-      return res.status(400).json({
-        success: false,
-        message: `Montant incorrect. Montant requis: ${sol.contributionAmount} ${sol.currency}`,
-        error: 'incorrect_amount'
-      });
-    }
-
-    if (account.balance < amount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Solde insuffisant',
-        error: 'insufficient_funds'
-      });
-    }
-
-    let targetRound;
-    if (roundIndex !== undefined) {
-      targetRound = sol.rounds[roundIndex];
-    } else {
-      targetRound = sol.rounds.find(r => r.status === 'active');
-    }
-
-    if (!targetRound) {
-      return res.status(400).json({
-        success: false,
-        message: 'Aucun round actif trouvé',
-        error: 'no_active_round'
-      });
-    }
-
-    // ✅ FIX 3: Vérification paiement existant avec .toString() sur req.user.userId
-    const existingPayment = targetRound.payments.find(p => 
-      p.payer.toString() === req.user.userId.toString()
-    );
-
-    if (existingPayment) {
-      return res.status(400).json({
-        success: false,
-        message: 'Paiement déjà effectué pour ce round',
-        error: 'payment_already_made'
-      });
-    }
-
-    const session = await mongoose.startSession();
-    await session.withTransaction(async () => {
-      account.balance -= amount;
-      await account.save({ session });
-
-      targetRound.payments.push({
-        payer: req.user.userId,
-        amount: amount,
-        date: new Date(),
-        status: 'completed',
-        notes: notes
-      });
-
-      const transaction = new Transaction({
-        user: req.user.userId,
-        account: accountId,
-        type: 'expense',
-        category: 'sols',
-        subcategory: 'contribution',
-        amount: amount,
-        currency: sol.currency,
-        description: `Paiement Sol: ${sol.name} - Round ${targetRound.roundNumber}`,
-        date: new Date(),
-        isConfirmed: true,
-        metadata: {
-          solId: sol._id,
-          roundIndex: sol.rounds.indexOf(targetRound),
-          roundNumber: targetRound.roundNumber,
-          recipient: targetRound.recipient
-        },
-        tags: [
-          'sol_payment',
-          `sol_type_${sol.type}`,
-          `frequency_${sol.frequency}`,
-          `position_${participant.position}`
-        ]
-      });
-
-      await transaction.save({ session });
-
-      if (targetRound.payments.length === sol.participants.length) {
-        targetRound.status = 'completed';
-        targetRound.completedDate = new Date();
-        
-        const totalAmount = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
-        await this.transferToRecipient(sol, targetRound, totalAmount, session);
-        
-        const nextRoundIndex = sol.rounds.indexOf(targetRound) + 1;
-        if (sol.rounds[nextRoundIndex]) {
-          sol.rounds[nextRoundIndex].status = 'active';
-          sol.rounds[nextRoundIndex].startDate = new Date();
-        } else {
-          sol.status = 'completed';
-          sol.completedDate = new Date();
-        }
+      // CORRECTION : Validation ObjectId
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: 'ID de sol invalide',
+          error: 'invalid_sol_id'
+        });
       }
 
-      sol.metrics.totalCollected += amount;
-      sol.lastActivityDate = new Date();
-      await sol.save({ session });
-    });
+      const sol = await Sol.findById(id).populate('participants.user', 'firstName lastName');
 
-    await this.collectPaymentAnalytics(req.user.userId, sol, targetRound, amount);
+      if (!sol) {
+        return res.status(404).json({
+          success: false,
+          message: 'Sol introuvable',
+          error: 'sol_not_found'
+        });
+      }
 
-    res.status(200).json({
-      success: true,
-      message: 'Paiement effectué avec succès',
-      data: {
-        transaction: {
+      // CORRECTION : Utilisation de la fonction de comparaison
+      const hasAccess = this.compareUserIds(sol.creator._id, req.user.userId) ||
+        sol.participants.some(p => 
+          p.user && this.compareUserIds(p.user._id, req.user.userId)
+        );
+
+      if (!hasAccess) {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé à ce sol',
+          error: 'unauthorized_sol_access'
+        });
+      }
+
+      // CORRECTION : Recherche participant sécurisée
+      const participant = sol.participants.find(p => 
+        p.user && this.compareUserIds(p.user._id, req.user.userId)
+      );
+
+      if (!participant) {
+        return res.status(400).json({
+          success: false,
+          message: 'Vous ne participez pas à ce sol',
+          error: 'not_participant'
+        });
+      }
+
+      const account = await Account.findOne({
+        _id: accountId,
+        user: req.user.userId,
+        isActive: true
+      });
+
+      if (!account) {
+        return res.status(404).json({
+          success: false,
+          message: 'Compte introuvable',
+          error: 'account_not_found'
+        });
+      }
+
+      if (amount !== sol.contributionAmount) {
+        return res.status(400).json({
+          success: false,
+          message: `Montant incorrect. Montant requis: ${sol.contributionAmount} ${sol.currency}`,
+          error: 'incorrect_amount'
+        });
+      }
+
+      if (account.balance < amount) {
+        return res.status(400).json({
+          success: false,
+          message: 'Solde insuffisant',
+          error: 'insufficient_funds'
+        });
+      }
+
+      let targetRound;
+      if (roundIndex !== undefined) {
+        targetRound = sol.rounds[roundIndex];
+      } else {
+        targetRound = sol.rounds.find(r => r.status === 'active');
+      }
+
+      if (!targetRound) {
+        return res.status(400).json({
+          success: false,
+          message: 'Aucun round actif trouvé',
+          error: 'no_active_round'
+        });
+      }
+
+      // CORRECTION : Utilisation de la fonction de comparaison
+      const existingPayment = targetRound.payments.find(p =>
+        this.compareUserIds(p.payer, req.user.userId)
+      );
+
+      if (existingPayment) {
+        return res.status(400).json({
+          success: false,
+          message: 'Paiement déjà effectué pour ce round',
+          error: 'payment_already_made'
+        });
+      }
+
+      const session = await mongoose.startSession();
+      await session.withTransaction(async () => {
+        // Débiter le compte
+        account.balance -= amount;
+        await account.save({ session });
+
+        // Ajouter le paiement au round
+        targetRound.payments.push({
+          payer: req.user.userId,
           amount: amount,
-          round: targetRound.roundNumber,
-          recipient: targetRound.recipient,
-          date: new Date()
-        },
-        roundStatus: {
-          paymentsReceived: targetRound.payments.length,
-          paymentsExpected: sol.participants.length,
-          isComplete: targetRound.payments.length === sol.participants.length
-        },
-        solProgress: {
-          completedRounds: sol.rounds.filter(r => r.status === 'completed').length,
-          totalRounds: sol.rounds.length,
-          status: sol.status
-        }
-      },
-      timestamp: new Date().toISOString()
-    });
+          date: new Date(),
+          status: 'completed',
+          notes: notes
+        });
 
-  } catch (error) {
-    console.error('❌ Erreur paiement sol:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors du paiement',
-      error: 'sol_payment_error'
-    });
-  }
-};
+        // Créer la transaction
+        const transaction = new Transaction({
+          user: req.user.userId,
+          account: accountId,
+          type: 'expense',
+          category: 'sols',
+          subcategory: 'contribution',
+          amount: amount,
+          currency: sol.currency,
+          description: `Paiement Sol: ${sol.name} - Round ${targetRound.roundNumber}`,
+          date: new Date(),
+          isConfirmed: true,
+          metadata: {
+            solId: sol._id,
+            roundIndex: sol.rounds.indexOf(targetRound),
+            roundNumber: targetRound.roundNumber,
+            recipient: targetRound.recipient
+          },
+          tags: [
+            'sol_payment',
+            `sol_type_${sol.type}`,
+            `frequency_${sol.frequency}`,
+            `position_${participant.position}`
+          ]
+        });
+
+        await transaction.save({ session });
+
+        // Vérifier si le round est terminé
+        if (targetRound.payments.length === sol.participants.length) {
+          targetRound.status = 'completed';
+          targetRound.completedDate = new Date();
+
+          const totalAmount = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
+          await this.transferToRecipient(sol, targetRound, totalAmount, session);
+
+          // Activer le round suivant ou terminer le sol
+          const nextRoundIndex = sol.rounds.indexOf(targetRound) + 1;
+          if (sol.rounds[nextRoundIndex]) {
+            sol.rounds[nextRoundIndex].status = 'active';
+            sol.rounds[nextRoundIndex].startDate = new Date();
+          } else {
+            sol.status = 'completed';
+            sol.completedDate = new Date();
+          }
+        }
+
+        // Mettre à jour les métriques du sol
+        if (!sol.metrics) {
+          sol.metrics = {
+            totalCollected: 0,
+            completedRounds: 0,
+            successRate: 0,
+            avgPaymentDelay: 0,
+            participantRetention: 100
+          };
+        }
+
+        sol.metrics.totalCollected = (sol.metrics.totalCollected || 0) + amount;
+        sol.lastActivityDate = new Date();
+        await sol.save({ session });
+      });
+
+      session.endSession();
+
+      // Collecter analytics
+      await this.collectPaymentAnalytics(req.user.userId, sol, targetRound, amount);
+
+      res.status(200).json({
+        success: true,
+        message: 'Paiement effectué avec succès',
+        data: {
+          transaction: {
+            amount: amount,
+            round: targetRound.roundNumber,
+            recipient: targetRound.recipient,
+            date: new Date()
+          },
+          roundStatus: {
+            paymentsReceived: targetRound.payments.length,
+            paymentsExpected: sol.participants.length,
+            isComplete: targetRound.payments.length === sol.participants.length
+          },
+          solProgress: {
+            completedRounds: sol.rounds.filter(r => r.status === 'completed').length,
+            totalRounds: sol.rounds.length,
+            status: sol.status
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur paiement sol:', error.message);
+      console.error('Stack trace:', error.stack);
+      
+      res.status(500).json({
+        success: false,
+        message: 'Erreur lors du paiement',
+        error: 'sol_payment_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  };
 
   // ===================================================================
   // 5. ANALYTICS ET DÉCOUVERTE
@@ -732,7 +872,7 @@ static makePayment = async (req, res) => {
         },
 
         financial: {
-          avgContribution: userSols.length > 0 ? 
+          avgContribution: userSols.length > 0 ?
             userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length : 0,
           monthlyCommitment: this.calculateMonthlyCommitment(userSols),
           roi_analysis: this.calculateROI(userSols, req.user.userId),
@@ -740,8 +880,8 @@ static makePayment = async (req, res) => {
         },
 
         behavioral: {
-          creation_tendency: userSols.filter(s => s.creator.toString() === req.user.userId).length,
-          joining_tendency: userSols.filter(s => s.creator.toString() !== req.user.userId).length,
+          creation_tendency: userSols.filter(s => this.compareUserIds(s.creator, req.user.userId)).length,
+          joining_tendency: userSols.filter(s => !this.compareUserIds(s.creator, req.user.userId)).length,
           completion_rate: this.calculateCompletionRate(userSols, req.user.userId),
           punctuality_score: this.calculatePunctualityScore(solTransactions),
           risk_profile: this.calculateRiskProfile(userSols)
@@ -770,24 +910,26 @@ static makePayment = async (req, res) => {
 
     } catch (error) {
       console.error('❌ Erreur analytics sols:', error.message);
+      console.error('Stack trace:', error.stack);
+      
       res.status(500).json({
         success: false,
         message: 'Erreur lors du calcul des analytics',
-        error: 'sol_analytics_error'
+        error: 'sol_analytics_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
 
   static discoverSols = async (req, res) => {
     try {
-      const { 
-        type, minAmount, maxAmount, currency = 'HTG', region, page = 1, limit = 20 
+      const {
+        type, minAmount, maxAmount, currency = 'HTG', region, page = 1, limit = 20
       } = req.query;
 
       const filter = {
         status: 'recruiting',
-        isPrivate: false,
-        isActive: true
+        isPrivate: false
       };
 
       if (type) filter.type = type;
@@ -816,7 +958,7 @@ static makePayment = async (req, res) => {
 
       const scoredSols = availableSols.map(sol => {
         const relevanceScore = this.calculateRelevanceScore(sol, userSols, req.user);
-        
+
         return {
           ...sol.toJSON(),
           relevanceScore,
@@ -850,10 +992,13 @@ static makePayment = async (req, res) => {
 
     } catch (error) {
       console.error('❌ Erreur découverte sols:', error.message);
+      console.error('Stack trace:', error.stack);
+      
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la découverte de sols',
-        error: 'sol_discovery_error'
+        error: 'sol_discovery_error',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   };
@@ -865,12 +1010,12 @@ static makePayment = async (req, res) => {
   static async generateUniqueAccessCode() {
     let code;
     let exists = true;
-    
+
     while (exists) {
       code = Math.random().toString(36).substring(2, 8).toUpperCase();
       exists = await Sol.findOne({ accessCode: code });
     }
-    
+
     return code;
   }
 
@@ -906,7 +1051,7 @@ static makePayment = async (req, res) => {
 
   static addFrequencyToDate(date, frequency) {
     const newDate = new Date(date);
-    
+
     switch (frequency) {
       case 'weekly':
         newDate.setDate(newDate.getDate() + 7);
@@ -923,24 +1068,24 @@ static makePayment = async (req, res) => {
       default:
         newDate.setMonth(newDate.getMonth() + 1);
     }
-    
+
     return newDate;
   }
 
   static calculateTurnsUntilUser(sol, userId) {
-    const userParticipant = sol.participants.find(p => 
-      p.user.toString() === userId || p.user._id.toString() === userId
+    const userParticipant = sol.participants.find(p =>
+      this.compareUserIds(p.user, userId)
     );
-    
+
     if (!userParticipant) return null;
 
     const currentRound = sol.rounds.findIndex(r => r.status === 'active' || r.status === 'pending');
     const userRound = userParticipant.position - 1;
 
     if (currentRound === -1) return userRound + 1;
-    
-    return userRound >= currentRound ? 
-      userRound - currentRound : 
+
+    return userRound >= currentRound ?
+      userRound - currentRound :
       sol.rounds.length - currentRound + userRound;
   }
 
@@ -1030,7 +1175,7 @@ static makePayment = async (req, res) => {
         typeCount[sol.type] = (typeCount[sol.type] || 0) + 1;
       });
 
-      return Object.keys(typeCount).reduce((a, b) => 
+      return Object.keys(typeCount).reduce((a, b) =>
         typeCount[a] > typeCount[b] ? a : b
       );
     } catch (error) {
@@ -1114,7 +1259,7 @@ static makePayment = async (req, res) => {
     });
 
     timingData.preferredDays = Object.entries(dayCount)
-      .sort(([,a], [,b]) => b - a)
+      .sort(([, a], [, b]) => b - a)
       .map(([day]) => parseInt(day));
 
     return timingData;
@@ -1129,12 +1274,12 @@ static makePayment = async (req, res) => {
     };
 
     userSols.forEach(sol => {
-      if (sol.creator.toString() === userId) {
+      if (this.compareUserIds(sol.creator, userId)) {
         patterns.asCreator++;
       } else {
         patterns.asParticipant++;
-        const userParticipant = sol.participants.find(p => 
-          p.user.toString() === userId || p.user._id?.toString() === userId
+        const userParticipant = sol.participants.find(p =>
+          this.compareUserIds(p.user, userId)
         );
         if (userParticipant) {
           patterns.preferredPositions.push(userParticipant.position);
@@ -1142,7 +1287,7 @@ static makePayment = async (req, res) => {
       }
     });
 
-    patterns.avgSolSize = userSols.length > 0 ? 
+    patterns.avgSolSize = userSols.length > 0 ?
       Math.round(userSols.reduce((sum, s) => sum + s.participants.length, 0) / userSols.length) : 0;
 
     return patterns;
@@ -1152,20 +1297,20 @@ static makePayment = async (req, res) => {
     const completedSols = userSols.filter(sol => sol.status === 'completed');
     const totalSols = userSols.filter(sol => sol.status !== 'recruiting');
 
-    return totalSols.length > 0 ? 
+    return totalSols.length > 0 ?
       Math.round((completedSols.length / totalSols.length) * 100) : 0;
   }
 
   static calculateMonthlyCommitment(userSols) {
     try {
       const activeSols = userSols.filter(sol => sol.status === 'active');
-      
+
       return activeSols.reduce((total, sol) => {
         const monthlyAmount = sol.frequency === 'weekly' ? sol.contributionAmount * 4 :
-                             sol.frequency === 'biweekly' ? sol.contributionAmount * 2 :
-                             sol.frequency === 'quarterly' ? sol.contributionAmount / 3 :
-                             sol.contributionAmount;
-        
+          sol.frequency === 'biweekly' ? sol.contributionAmount * 2 :
+            sol.frequency === 'quarterly' ? sol.contributionAmount / 3 :
+              sol.contributionAmount;
+
         return total + monthlyAmount;
       }, 0);
     } catch (error) {
@@ -1177,17 +1322,17 @@ static makePayment = async (req, res) => {
   static calculateROI(userSols, userId) {
     try {
       const completedSols = userSols.filter(sol => sol.status === 'completed');
-      
+
       if (completedSols.length === 0) return { roi: 0, analysis: 'Aucun sol terminé' };
 
       let totalInvested = 0;
       let totalReceived = 0;
 
       completedSols.forEach(sol => {
-        const userParticipant = sol.participants.find(p => 
-          p.user.toString() === userId || p.user._id?.toString() === userId
+        const userParticipant = sol.participants.find(p =>
+          this.compareUserIds(p.user, userId)
         );
-        
+
         if (userParticipant) {
           totalInvested += sol.contributionAmount * (sol.rounds?.length || sol.maxParticipants);
           totalReceived += userParticipant.receivedAmount || (sol.contributionAmount * sol.maxParticipants);
@@ -1195,7 +1340,7 @@ static makePayment = async (req, res) => {
       });
 
       const roi = totalInvested > 0 ? ((totalReceived - totalInvested) / totalInvested) * 100 : 0;
-      
+
       return {
         roi: Math.round(roi * 100) / 100,
         totalInvested,
@@ -1211,14 +1356,14 @@ static makePayment = async (req, res) => {
   static analyzeCashFlowImpact(solTransactions) {
     try {
       const monthlyFlow = {};
-      
+
       solTransactions.forEach(tx => {
         const monthKey = `${tx.date.getFullYear()}-${tx.date.getMonth() + 1}`;
-        
+
         if (!monthlyFlow[monthKey]) {
           monthlyFlow[monthKey] = { out: 0, in: 0 };
         }
-        
+
         if (tx.type === 'expense') {
           monthlyFlow[monthKey].out += tx.amount;
         } else if (tx.type === 'income') {
@@ -1249,11 +1394,11 @@ static makePayment = async (req, res) => {
   static calculateVolatility(flowData) {
     try {
       if (flowData.length < 2) return 0;
-      
+
       const netFlows = flowData.map(f => f.in - f.out);
       const mean = netFlows.reduce((sum, flow) => sum + flow, 0) / netFlows.length;
       const variance = netFlows.reduce((sum, flow) => sum + Math.pow(flow - mean, 2), 0) / netFlows.length;
-      
+
       return Math.round(Math.sqrt(variance));
     } catch (error) {
       return 0;
@@ -1264,7 +1409,7 @@ static makePayment = async (req, res) => {
     try {
       const totalSols = userSols.filter(sol => sol.status !== 'recruiting').length;
       const completedSols = userSols.filter(sol => sol.status === 'completed').length;
-      
+
       return totalSols > 0 ? Math.round((completedSols / totalSols) * 100) : 0;
     } catch (error) {
       console.error('❌ Erreur taux completion:', error.message);
@@ -1275,7 +1420,7 @@ static makePayment = async (req, res) => {
   static calculatePunctualityScore(solTransactions) {
     try {
       if (solTransactions.length === 0) return 50;
-      
+
       const onTimeTransactions = solTransactions.filter(tx => {
         const txDate = new Date(tx.date);
         return txDate.getDate() <= 5;
@@ -1291,7 +1436,7 @@ static makePayment = async (req, res) => {
   static calculateRiskProfile(userSols) {
     try {
       if (userSols.length === 0) return 'nouveau';
-      
+
       const completedRate = this.calculateCompletionRate(userSols);
       const cancelledSols = userSols.filter(s => s.status === 'cancelled').length;
 
@@ -1299,7 +1444,7 @@ static makePayment = async (req, res) => {
       if (completedRate >= 75) return 'faible';
       if (completedRate >= 50) return 'moyen';
       if (cancelledSols > 2 || completedRate < 30) return 'élevé';
-      
+
       return 'moyen';
     } catch (error) {
       console.error('❌ Erreur profil risque:', error.message);
@@ -1315,7 +1460,7 @@ static makePayment = async (req, res) => {
 
       const avgAmount = userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length;
       const recentSols = userSols.slice(-3);
-      const trend = recentSols.length > 1 ? 
+      const trend = recentSols.length > 1 ?
         (recentSols[recentSols.length - 1].contributionAmount - recentSols[0].contributionAmount) / recentSols.length : 0;
 
       const predictedAmount = Math.round(avgAmount + trend);
@@ -1340,7 +1485,7 @@ static makePayment = async (req, res) => {
       const cancelledRate = (userSols.filter(s => s.status === 'cancelled').length / userSols.length) * 100;
 
       let probability = completionRate;
-      
+
       if (cancelledRate > 20) probability -= 15;
       if (userSols.length > 5) probability += 10;
 
@@ -1362,7 +1507,7 @@ static makePayment = async (req, res) => {
         dayFrequency[day] = (dayFrequency[day] || 0) + 1;
       });
 
-      const optimalDay = Object.keys(dayFrequency).reduce((a, b) => 
+      const optimalDay = Object.keys(dayFrequency).reduce((a, b) =>
         dayFrequency[a] > dayFrequency[b] ? a : b
       );
 
@@ -1378,7 +1523,7 @@ static makePayment = async (req, res) => {
   static async generatePersonalRecommendations(userId, userSols) {
     const recommendations = [];
 
-    const avgAmount = userSols.length > 0 ? 
+    const avgAmount = userSols.length > 0 ?
       userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length : 0;
     const completionRate = this.calculateSuccessRate(userSols, userId);
 
@@ -1407,7 +1552,7 @@ static makePayment = async (req, res) => {
 
   static assessDataQuality(sols, transactions) {
     let score = 0;
-    
+
     if (sols.length >= 3) score += 30;
     if (transactions.length >= 10) score += 30;
     if (sols.some(s => s.status === 'completed')) score += 20;
@@ -1443,11 +1588,11 @@ static makePayment = async (req, res) => {
   }
 
   static async collectLeaveAnalytics(userId, sol, reason) {
-    console.log('Leave analytics pour:', userId);
+    console.log('Leave analytics pour:', userId, 'Raison:', reason);
   }
 
   static async collectPaymentAnalytics(userId, sol, round, amount) {
-    console.log('Payment analytics pour:', userId);
+    console.log('Payment analytics pour:', userId, 'Montant:', amount);
   }
 
   static async collectViewAnalytics(userId, solId) {
@@ -1494,10 +1639,10 @@ static makePayment = async (req, res) => {
 
   static calculateCompatibility(sol, userSols) {
     if (userSols.length === 0) return 'nouveau';
-    
+
     const avgAmount = userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length;
     const amountDiff = Math.abs(sol.contributionAmount - avgAmount) / avgAmount;
-    
+
     if (amountDiff < 0.2) return 'élevée';
     if (amountDiff < 0.5) return 'moyenne';
     return 'faible';
@@ -1505,11 +1650,11 @@ static makePayment = async (req, res) => {
 
   static assessRiskLevel(sol) {
     let riskScore = 0;
-    
+
     if (sol.participants.length < sol.maxParticipants * 0.5) riskScore += 2;
     if (sol.contributionAmount > 5000) riskScore += 1;
     if (sol.isPrivate) riskScore += 1;
-    
+
     if (riskScore >= 3) return 'élevé';
     if (riskScore === 2) return 'moyen';
     return 'faible';
@@ -1521,19 +1666,19 @@ static makePayment = async (req, res) => {
   }
 
   static async getAmountRanges(currency) {
-    const amounts = await Sol.find({ 
-      status: 'recruiting', 
+    const amounts = await Sol.find({
+      status: 'recruiting',
       currency: currency,
-      isPrivate: false 
+      isPrivate: false
     }).select('contributionAmount');
-    
+
     if (amounts.length === 0) return [];
-    
+
     const values = amounts.map(a => a.contributionAmount).sort((a, b) => a - b);
     const min = values[0];
     const max = values[values.length - 1];
     const mid = Math.round((min + max) / 2);
-    
+
     return [
       { min: min, max: mid, label: `${min} - ${mid} ${currency}` },
       { min: mid, max: max, label: `${mid} - ${max} ${currency}` }
@@ -1554,19 +1699,19 @@ SolController.validateCreateSol = [
     .trim()
     .isLength({ min: 3, max: 100 })
     .withMessage('Le nom doit contenir entre 3 et 100 caractères'),
-  
+
   body('contributionAmount')
     .isFloat({ min: 100 })
     .withMessage('Le montant de contribution doit être au moins 100'),
-  
+
   body('maxParticipants')
     .isInt({ min: 3, max: 20 })
     .withMessage('Le nombre de participants doit être entre 3 et 20'),
-  
+
   body('frequency')
     .isIn(['weekly', 'biweekly', 'monthly', 'quarterly'])
     .withMessage('Fréquence invalide'),
-  
+
   body('startDate')
     .isISO8601()
     .withMessage('Date de début invalide')
@@ -1574,17 +1719,17 @@ SolController.validateCreateSol = [
       const startDate = new Date(value);
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
-      
+
       if (startDate < tomorrow) {
         throw new Error('La date de début doit être au moins demain');
       }
       return true;
     }),
-  
+
   body('type')
     .isIn(['classic', 'investment', 'emergency', 'project', 'business'])
     .withMessage('Type de sol invalide'),
-  
+
   body('currency')
     .isIn(['HTG', 'USD'])
     .withMessage('Devise non supportée')
@@ -1601,11 +1746,11 @@ SolController.validatePayment = [
   body('accountId')
     .isMongoId()
     .withMessage('ID de compte invalide'),
-  
+
   body('amount')
     .isFloat({ min: 1 })
     .withMessage('Montant invalide'),
-  
+
   body('notes')
     .optional()
     .trim()
