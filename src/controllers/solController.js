@@ -164,7 +164,7 @@ class SolController {
 
         return {
           ...sol.toJSON(),
-          userRole: sol.creator._id.toString() === req.user.userId ? 'creator' : 'participant',
+          userRole: sol.creator._id.toString() === req.user.userId.toString() ? 'creator' : 'participant',
           userPosition: userParticipation?.position,
           nextRoundIndex: nextRound ? sol.rounds.indexOf(nextRound) + 1 : null,
           daysUntilNextPayment: nextPaymentDue ? 
@@ -226,8 +226,8 @@ class SolController {
         });
       }
 
-      const hasAccess = sol.creator._id.toString() === req.user.userId ||
-                       sol.participants.some(p => p.user._id.toString() === req.user.userId);
+      const hasAccess = sol.creator._id.toString() === req.user.userId.toString() ||
+                       sol.participants.some(p => p.user._id.toString() === req.user.userId.toString());
 
       if (!hasAccess) {
         return res.status(403).json({
@@ -239,7 +239,7 @@ class SolController {
 
       const enrichedSol = {
         ...sol.toJSON(),
-        userRole: sol.creator._id.toString() === req.user.userId ? 'creator' : 'participant',
+        userRole: sol.creator._id.toString() === req.user.userId.toString() ? 'creator' : 'participant',
         progress: {
           completedRounds: sol.rounds.filter(r => r.status === 'completed').length,
           totalRounds: sol.rounds.length,
@@ -329,9 +329,7 @@ class SolController {
         });
       }
 
-      const alreadyMember = sol.participants.some(p => 
-        p.user.toString() === req.user.userId
-      );
+      const alreadyMember = sol.participants.some(p => p.user.toString() === req.user.userId.toString());
 
       if (alreadyMember) {
         return res.status(400).json({
@@ -413,10 +411,7 @@ class SolController {
         });
       }
 
-      const participantIndex = sol.participants.findIndex(p => 
-        p.user.toString() === req.user.userId
-      );
-
+      const participantIndex = sol.participants.findIndex(p =>  p.user.toString() === req.user.userId.toString());
       if (participantIndex === -1) {
         return res.status(400).json({
           success: false,
@@ -494,187 +489,204 @@ class SolController {
   // 4. GESTION PAIEMENTS
   // ===================================================================
 
-  static makePayment = async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { accountId, amount, roundIndex, notes } = req.body;
+  // 🔧 MÉTHODE makePayment CORRIGÉE
+// Remplacez votre méthode makePayment par cette version corrigée
 
-      const sol = await Sol.findById(id).populate('participants.user', 'firstName lastName');
+static makePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { accountId, amount, roundIndex, notes } = req.body;
 
-      if (!sol) {
-        return res.status(404).json({
-          success: false,
-          message: 'Sol introuvable',
-          error: 'sol_not_found'
-        });
-      }
+    const sol = await Sol.findById(id).populate('participants.user', 'firstName lastName');
 
-      const participant = sol.participants.find(p => 
-        p.user._id.toString() === req.user.userId
-      );
-
-      if (!participant) {
-        return res.status(400).json({
-          success: false,
-          message: 'Vous ne participez pas à ce sol',
-          error: 'not_participant'
-        });
-      }
-
-      const account = await Account.findOne({
-        _id: accountId,
-        user: req.user.userId,
-        isActive: true
-      });
-
-      if (!account) {
-        return res.status(404).json({
-          success: false,
-          message: 'Compte introuvable',
-          error: 'account_not_found'
-        });
-      }
-
-      if (amount !== sol.contributionAmount) {
-        return res.status(400).json({
-          success: false,
-          message: `Montant incorrect. Montant requis: ${sol.contributionAmount} ${sol.currency}`,
-          error: 'incorrect_amount'
-        });
-      }
-
-      if (account.balance < amount) {
-        return res.status(400).json({
-          success: false,
-          message: 'Solde insuffisant',
-          error: 'insufficient_funds'
-        });
-      }
-
-      let targetRound;
-      if (roundIndex !== undefined) {
-        targetRound = sol.rounds[roundIndex];
-      } else {
-        targetRound = sol.rounds.find(r => r.status === 'active');
-      }
-
-      if (!targetRound) {
-        return res.status(400).json({
-          success: false,
-          message: 'Aucun round actif trouvé',
-          error: 'no_active_round'
-        });
-      }
-
-      const existingPayment = targetRound.payments.find(p => 
-        p.payer.toString() === req.user.userId
-      );
-
-      if (existingPayment) {
-        return res.status(400).json({
-          success: false,
-          message: 'Paiement déjà effectué pour ce round',
-          error: 'payment_already_made'
-        });
-      }
-
-      const session = await mongoose.startSession();
-      await session.withTransaction(async () => {
-        account.balance -= amount;
-        await account.save({ session });
-
-        targetRound.payments.push({
-          payer: req.user.userId,
-          amount: amount,
-          date: new Date(),
-          status: 'completed',
-          notes: notes
-        });
-
-        const transaction = new Transaction({
-          user: req.user.userId,
-          account: accountId,
-          type: 'expense',
-          category: 'sols',
-          subcategory: 'contribution',
-          amount: amount,
-          currency: sol.currency,
-          description: `Paiement Sol: ${sol.name} - Round ${targetRound.roundNumber}`,
-          date: new Date(),
-          isConfirmed: true,
-          metadata: {
-            solId: sol._id,
-            roundIndex: sol.rounds.indexOf(targetRound),
-            roundNumber: targetRound.roundNumber,
-            recipient: targetRound.recipient
-          },
-          tags: [
-            'sol_payment',
-            `sol_type_${sol.type}`,
-            `frequency_${sol.frequency}`,
-            `position_${participant.position}`
-          ]
-        });
-
-        await transaction.save({ session });
-
-        if (targetRound.payments.length === sol.participants.length) {
-          targetRound.status = 'completed';
-          targetRound.completedDate = new Date();
-          
-          const totalAmount = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
-          await this.transferToRecipient(sol, targetRound, totalAmount, session);
-          
-          const nextRoundIndex = sol.rounds.indexOf(targetRound) + 1;
-          if (sol.rounds[nextRoundIndex]) {
-            sol.rounds[nextRoundIndex].status = 'active';
-            sol.rounds[nextRoundIndex].startDate = new Date();
-          } else {
-            sol.status = 'completed';
-            sol.completedDate = new Date();
-          }
-        }
-
-        sol.metrics.totalCollected += amount;
-        sol.lastActivityDate = new Date();
-        await sol.save({ session });
-      });
-
-      await this.collectPaymentAnalytics(req.user.userId, sol, targetRound, amount);
-
-      res.status(200).json({
-        success: true,
-        message: 'Paiement effectué avec succès',
-        data: {
-          transaction: {
-            amount: amount,
-            round: targetRound.roundNumber,
-            recipient: targetRound.recipient,
-            date: new Date()
-          },
-          roundStatus: {
-            paymentsReceived: targetRound.payments.length,
-            paymentsExpected: sol.participants.length,
-            isComplete: targetRound.payments.length === sol.participants.length
-          },
-          solProgress: {
-            completedRounds: sol.rounds.filter(r => r.status === 'completed').length,
-            totalRounds: sol.rounds.length,
-            status: sol.status
-          }
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Erreur paiement sol:', error.message);
-      res.status(500).json({
+    if (!sol) {
+      return res.status(404).json({
         success: false,
-        message: 'Erreur lors du paiement',
-        error: 'sol_payment_error'
+        message: 'Sol introuvable',
+        error: 'sol_not_found'
       });
     }
-  };
+
+    // ✅ FIX 1: Vérification d'accès avec .toString() sur req.user.userId
+    const hasAccess = sol.creator._id.toString() === req.user.userId.toString() ||
+                     sol.participants.some(p => p.user._id.toString() === req.user.userId.toString());
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès non autorisé à ce sol',
+        error: 'unauthorized_sol_access'
+      });
+    }
+
+    // ✅ FIX 2: Recherche participant avec .toString() sur req.user.userId
+    const participant = sol.participants.find(p => 
+      p.user._id.toString() === req.user.userId.toString()
+    );
+
+    if (!participant) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous ne participez pas à ce sol',
+        error: 'not_participant'
+      });
+    }
+
+    const account = await Account.findOne({
+      _id: accountId,
+      user: req.user.userId,
+      isActive: true
+    });
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: 'Compte introuvable',
+        error: 'account_not_found'
+      });
+    }
+
+    if (amount !== sol.contributionAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Montant incorrect. Montant requis: ${sol.contributionAmount} ${sol.currency}`,
+        error: 'incorrect_amount'
+      });
+    }
+
+    if (account.balance < amount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Solde insuffisant',
+        error: 'insufficient_funds'
+      });
+    }
+
+    let targetRound;
+    if (roundIndex !== undefined) {
+      targetRound = sol.rounds[roundIndex];
+    } else {
+      targetRound = sol.rounds.find(r => r.status === 'active');
+    }
+
+    if (!targetRound) {
+      return res.status(400).json({
+        success: false,
+        message: 'Aucun round actif trouvé',
+        error: 'no_active_round'
+      });
+    }
+
+    // ✅ FIX 3: Vérification paiement existant avec .toString() sur req.user.userId
+    const existingPayment = targetRound.payments.find(p => 
+      p.payer.toString() === req.user.userId.toString()
+    );
+
+    if (existingPayment) {
+      return res.status(400).json({
+        success: false,
+        message: 'Paiement déjà effectué pour ce round',
+        error: 'payment_already_made'
+      });
+    }
+
+    const session = await mongoose.startSession();
+    await session.withTransaction(async () => {
+      account.balance -= amount;
+      await account.save({ session });
+
+      targetRound.payments.push({
+        payer: req.user.userId,
+        amount: amount,
+        date: new Date(),
+        status: 'completed',
+        notes: notes
+      });
+
+      const transaction = new Transaction({
+        user: req.user.userId,
+        account: accountId,
+        type: 'expense',
+        category: 'sols',
+        subcategory: 'contribution',
+        amount: amount,
+        currency: sol.currency,
+        description: `Paiement Sol: ${sol.name} - Round ${targetRound.roundNumber}`,
+        date: new Date(),
+        isConfirmed: true,
+        metadata: {
+          solId: sol._id,
+          roundIndex: sol.rounds.indexOf(targetRound),
+          roundNumber: targetRound.roundNumber,
+          recipient: targetRound.recipient
+        },
+        tags: [
+          'sol_payment',
+          `sol_type_${sol.type}`,
+          `frequency_${sol.frequency}`,
+          `position_${participant.position}`
+        ]
+      });
+
+      await transaction.save({ session });
+
+      if (targetRound.payments.length === sol.participants.length) {
+        targetRound.status = 'completed';
+        targetRound.completedDate = new Date();
+        
+        const totalAmount = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
+        await this.transferToRecipient(sol, targetRound, totalAmount, session);
+        
+        const nextRoundIndex = sol.rounds.indexOf(targetRound) + 1;
+        if (sol.rounds[nextRoundIndex]) {
+          sol.rounds[nextRoundIndex].status = 'active';
+          sol.rounds[nextRoundIndex].startDate = new Date();
+        } else {
+          sol.status = 'completed';
+          sol.completedDate = new Date();
+        }
+      }
+
+      sol.metrics.totalCollected += amount;
+      sol.lastActivityDate = new Date();
+      await sol.save({ session });
+    });
+
+    await this.collectPaymentAnalytics(req.user.userId, sol, targetRound, amount);
+
+    res.status(200).json({
+      success: true,
+      message: 'Paiement effectué avec succès',
+      data: {
+        transaction: {
+          amount: amount,
+          round: targetRound.roundNumber,
+          recipient: targetRound.recipient,
+          date: new Date()
+        },
+        roundStatus: {
+          paymentsReceived: targetRound.payments.length,
+          paymentsExpected: sol.participants.length,
+          isComplete: targetRound.payments.length === sol.participants.length
+        },
+        solProgress: {
+          completedRounds: sol.rounds.filter(r => r.status === 'completed').length,
+          totalRounds: sol.rounds.length,
+          status: sol.status
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur paiement sol:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du paiement',
+      error: 'sol_payment_error'
+    });
+  }
+};
 
   // ===================================================================
   // 5. ANALYTICS ET DÉCOUVERTE

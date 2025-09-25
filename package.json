@@ -1,48 +1,49 @@
 {
  "name": "finapp-haiti-backend",
-  "version": "1.0.0",
-  "description": "Backend API pour FinApp Haiti - Gestion financière adaptée au contexte haïtien",
-  "main": "src/app.js",
-  "scripts": {
-    "start": "node src/app.js",
-    "dev": "nodemon src/app.js",
-    "test": "echo \"Tests à venir\" && exit 0"
-  },
-   "keywords": [
-    "finapp",
-    "haiti",
-    "finance",
-    "api",
-    "backend",
-    "mongodb",
-    "express"
-  ],
+ "version": "1.0.0",
+ "description": "Backend API pour FinApp Haiti - Gestion financière adaptée au contexte haïtien",
+ "main": "src/app.js",
+ "scripts": {
+  "start": "node src/app.js",
+  "dev": "nodemon src/app.js",
+  "test": "echo \"Tests à venir\" && exit 0"
+ },
+ "keywords": [
+  "finapp",
+  "haiti",
+  "finance",
+  "api",
+  "backend",
+  "mongodb",
+  "express"
+ ],
  "author": "FinApp Haiti Team",
-  "license": "MIT",
-  "type": "commonjs",
-  "dependencies": {
-    "bcryptjs": "^3.0.2",
-    "cloudinary": "^2.7.0",
-    "compression": "^1.8.1",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.2",
-    "express": "^5.1.0",
-    "express-rate-limit": "^8.1.0",
-    "express-validator": "^7.2.1",
-    "helmet": "^8.1.0",
-    "joi": "^18.0.1",
-    "jsonwebtoken": "^9.0.2",
-    "moment": "^2.30.1",
-    "mongoose": "^8.18.1",
-    "morgan": "^1.10.1",
-    "multer": "^2.0.2",
-    "nodemailer": "^7.0.6"
-  },
-  "devDependencies": {
-    "eslint": "^9.36.0",
-    "jest": "^30.1.3",
-    "nodemon": "^3.1.10",
-    "prettier": "^3.6.2",
-    "supertest": "^7.1.4"
-  }
+ "license": "MIT",
+ "type": "commonjs",
+ "dependencies": {
+  "axios": "^1.12.2",
+  "bcryptjs": "^3.0.2",
+  "cloudinary": "^2.7.0",
+  "compression": "^1.8.1",
+  "cors": "^2.8.5",
+  "dotenv": "^17.2.2",
+  "express": "^5.1.0",
+  "express-rate-limit": "^8.1.0",
+  "express-validator": "^7.2.1",
+  "helmet": "^8.1.0",
+  "joi": "^18.0.1",
+  "jsonwebtoken": "^9.0.2",
+  "moment": "^2.30.1",
+  "mongoose": "^8.18.1",
+  "morgan": "^1.10.1",
+  "multer": "^2.0.2",
+  "nodemailer": "^7.0.6"
+ },
+ "devDependencies": {
+  "eslint": "^9.36.0",
+  "jest": "^30.1.3",
+  "nodemon": "^3.1.10",
+  "prettier": "^3.6.2",
+  "supertest": "^7.1.4"
+ }
 }
