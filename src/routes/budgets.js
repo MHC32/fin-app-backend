@@ -57,7 +57,7 @@ const adminRateLimit = rateLimit({
 // ===================================================================
 
 // Tous les endpoints nécessitent une authentification
-router.use(authMiddleware.requireAuth);
+router.use(authMiddleware.authenticate);
 
 // ===================================================================
 // VALIDATIONS RÉUTILISABLES

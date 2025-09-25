@@ -94,10 +94,10 @@ app.use('/api/accounts', require('./routes/accounts'));
 app.use('/api/transactions', require('./routes/transactions'));
 
 // TODO Phase 5: Routes Budgets
-// app.use('/api/budgets', require('./routes/budgets'));
+app.use('/api/budgets', require('./routes/budgets'));
 
 // TODO Phase 6: Routes Sols
-// app.use('/api/sols', require('./routes/sols'));
+app.use('/api/sols', require('./routes/sols'));
 
 // TODO Phase 6: Routes Investments
 // app.use('/api/investments', require('./routes/investments'));
