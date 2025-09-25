@@ -1,6 +1,6 @@
 // src/controllers/solController.js
 // Controller pour gestion sols/tontines - FinApp Haiti
-// Approche progressive : CRUD complet + Analytics + IA Data Collection
+// Version complète finale avec toutes les corrections
 
 const Sol = require('../models/Sol');
 const User = require('../models/User');
@@ -9,30 +9,12 @@ const Transaction = require('../models/Transaction');
 const { body, validationResult, param, query } = require('express-validator');
 const mongoose = require('mongoose');
 
-/**
- * ===================================================================
- * SOL CONTROLLER - GESTION TONTINES HAITI
- * ===================================================================
- * 
- * Fonctionnalités :
- * - CRUD sols complets (Create, Read, Update, Delete)
- * - Gestion des participants et rounds
- * - Calculs automatisés (tours, paiements, intérêts)
- * - Analytics et patterns comportementaux pour IA
- * - Intégration avec comptes bancaires et transactions
- * - Notifications intelligentes contexte Haiti
- */
-
 class SolController {
 
   // ===================================================================
   // 1. CRÉATION SOLS
   // ===================================================================
 
-  /**
-   * Créer un nouveau sol/tontine
-   * POST /api/sols/
-   */
   static createSol = async (req, res) => {
     try {
       const errors = validationResult(req);
@@ -45,23 +27,11 @@ class SolController {
       }
 
       const {
-        name,
-        description,
-        type,
-        contributionAmount,
-        currency,
-        maxParticipants,
-        frequency,
-        startDate,
-        duration,
-        paymentDay,
-        interestRate,
-        tags,
-        isPrivate,
-        rules
+        name, description, type, contributionAmount, currency, maxParticipants,
+        frequency, startDate, duration, paymentDay, interestRate, tags, isPrivate, rules
       } = req.body;
 
-      // Vérifier que l'utilisateur n'a pas trop de sols actifs
+      // Vérifier limite sols actifs
       const activeSolsCount = await Sol.countDocuments({
         creator: req.user.userId,
         status: { $in: ['recruiting', 'active'] }
@@ -83,25 +53,14 @@ class SolController {
         creator: req.user.userId,
         name: name.trim(),
         description: description?.trim(),
-        type,
-        contributionAmount,
-        currency,
-        maxParticipants,
-        frequency,
+        type, contributionAmount, currency, maxParticipants, frequency,
         startDate: new Date(startDate),
-        duration,
-        paymentDay: paymentDay || 1,
-        interestRate: interestRate || 0,
-        tags: tags || [],
-        isPrivate: isPrivate || false,
-        rules: rules || [],
-        accessCode,
-        status: 'recruiting',
+        duration, paymentDay: paymentDay || 1, interestRate: interestRate || 0,
+        tags: tags || [], isPrivate: isPrivate || false, rules: rules || [],
+        accessCode, status: 'recruiting',
         
-        // Initialiser rounds automatiquement
         rounds: this.generateRounds(maxParticipants, new Date(startDate), frequency),
         
-        // Le créateur rejoint automatiquement
         participants: [{
           user: req.user.userId,
           position: 1,
@@ -110,7 +69,6 @@ class SolController {
           paymentStatus: 'pending'
         }],
         
-        // Metrics pour IA
         metrics: {
           totalRounds: maxParticipants,
           completedRounds: 0,
@@ -121,14 +79,11 @@ class SolController {
       });
 
       await newSol.save();
-
-      // Peupler les relations pour la réponse
       await newSol.populate([
         { path: 'creator', select: 'firstName lastName email' },
         { path: 'participants.user', select: 'firstName lastName' }
       ]);
 
-      // Collecte données pour IA
       await this.collectCreationAnalytics(req.user.userId, newSol);
 
       res.status(201).json({
@@ -169,23 +124,13 @@ class SolController {
   // 2. LECTURE SOLS
   // ===================================================================
 
-  /**
-   * Récupérer tous les sols d'un utilisateur
-   * GET /api/sols/
-   */
   static getUserSols = async (req, res) => {
     try {
       const { 
-        status = 'all',
-        type,
-        page = 1,
-        limit = 20,
-        sortBy = 'lastActivityDate',
-        sortOrder = 'desc',
-        includeAnalytics = false
+        status = 'all', type, page = 1, limit = 20,
+        sortBy = 'lastActivityDate', sortOrder = 'desc', includeAnalytics = false
       } = req.query;
 
-      // Construire filtre de base
       const filter = {
         $or: [
           { creator: req.user.userId },
@@ -193,36 +138,27 @@ class SolController {
         ]
       };
 
-      // Filtres optionnels
-      if (status !== 'all') {
-        filter.status = status;
-      }
+      if (status !== 'all') filter.status = status;
+      if (type) filter.type = type;
 
-      if (type) {
-        filter.type = type;
-      }
-
-      // Pagination
       const skip = (parseInt(page) - 1) * parseInt(limit);
 
-      // Récupération avec populate complet
       const [sols, totalCount] = await Promise.all([
         Sol.find(filter)
           .populate('creator', 'firstName lastName email')
           .populate('participants.user', 'firstName lastName')
           .populate('rounds.recipient', 'firstName lastName')
+          .populate('rounds.payments.payer', 'firstName lastName')
           .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
           .skip(skip)
           .limit(parseInt(limit)),
         Sol.countDocuments(filter)
       ]);
 
-      // Enrichir avec informations utilisateur spécifiques
       const enrichedSols = sols.map(sol => {
         const userParticipation = sol.participants.find(p => 
           p.user._id.toString() === req.user.userId
         );
-
         const nextRound = sol.rounds.find(r => r.status === 'pending');
         const nextPaymentDue = sol.getNextPaymentDate();
 
@@ -237,7 +173,6 @@ class SolController {
         };
       });
 
-      // Analytics si demandées
       let analytics = null;
       if (includeAnalytics) {
         analytics = await this.generateUserSolAnalytics(req.user.userId, sols);
@@ -248,10 +183,8 @@ class SolController {
         data: {
           sols: enrichedSols,
           pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
-            total: totalCount,
-            pages: Math.ceil(totalCount / parseInt(limit))
+            page: parseInt(page), limit: parseInt(limit),
+            total: totalCount, pages: Math.ceil(totalCount / parseInt(limit))
           },
           summary: {
             totalSols: totalCount,
@@ -274,10 +207,6 @@ class SolController {
     }
   };
 
-  /**
-   * Récupérer un sol spécifique
-   * GET /api/sols/:id
-   */
   static getSolById = async (req, res) => {
     try {
       const { id } = req.params;
@@ -297,7 +226,6 @@ class SolController {
         });
       }
 
-      // Vérifier que l'utilisateur fait partie du sol
       const hasAccess = sol.creator._id.toString() === req.user.userId ||
                        sol.participants.some(p => p.user._id.toString() === req.user.userId);
 
@@ -309,7 +237,6 @@ class SolController {
         });
       }
 
-      // Enrichir avec informations contextuelles
       const enrichedSol = {
         ...sol.toJSON(),
         userRole: sol.creator._id.toString() === req.user.userId ? 'creator' : 'participant',
@@ -330,7 +257,6 @@ class SolController {
         }
       };
 
-      // Historique des transactions si demandé
       let transactionHistory = null;
       if (includeHistory) {
         transactionHistory = await Transaction.find({
@@ -339,7 +265,6 @@ class SolController {
         }).sort({ date: -1 }).limit(50);
       }
 
-      // Collecter données analytiques pour IA
       await this.collectViewAnalytics(req.user.userId, sol._id);
 
       res.status(200).json({
@@ -366,10 +291,6 @@ class SolController {
   // 3. GESTION PARTICIPANTS
   // ===================================================================
 
-  /**
-   * Rejoindre un sol avec code d'accès
-   * POST /api/sols/join
-   */
   static joinSol = async (req, res) => {
     try {
       const errors = validationResult(req);
@@ -382,8 +303,6 @@ class SolController {
       }
 
       const { accessCode } = req.body;
-
-      // Trouver le sol
       const sol = await Sol.findByAccessCode(accessCode);
 
       if (!sol) {
@@ -394,7 +313,6 @@ class SolController {
         });
       }
 
-      // Vérifications
       if (sol.status !== 'recruiting') {
         return res.status(400).json({
           success: false,
@@ -411,7 +329,6 @@ class SolController {
         });
       }
 
-      // Vérifier si déjà participant
       const alreadyMember = sol.participants.some(p => 
         p.user.toString() === req.user.userId
       );
@@ -424,7 +341,6 @@ class SolController {
         });
       }
 
-      // Ajouter le participant
       const newPosition = sol.participants.length + 1;
       sol.participants.push({
         user: req.user.userId,
@@ -434,29 +350,22 @@ class SolController {
         paymentStatus: 'pending'
       });
 
-      // Assigner au round correspondant à sa position
       if (sol.rounds[newPosition - 1]) {
         sol.rounds[newPosition - 1].recipient = req.user.userId;
       }
 
-      // Si c'est le dernier participant, démarrer le sol
       if (sol.participants.length === sol.maxParticipants) {
         sol.status = 'active';
         sol.actualStartDate = new Date();
-        
-        // Programmer première notification
         await this.schedulePaymentNotifications(sol);
       }
 
       await sol.save();
-
-      // Peupler pour réponse
       await sol.populate([
         { path: 'creator', select: 'firstName lastName' },
         { path: 'participants.user', select: 'firstName lastName' }
       ]);
 
-      // Analytics rejoindre sol pour IA
       await this.collectJoinAnalytics(req.user.userId, sol);
 
       res.status(200).json({
@@ -489,10 +398,6 @@ class SolController {
     }
   };
 
-  /**
-   * Quitter un sol (avec conditions)
-   * DELETE /api/sols/:id/leave
-   */
   static leaveSol = async (req, res) => {
     try {
       const { id } = req.params;
@@ -508,7 +413,6 @@ class SolController {
         });
       }
 
-      // Vérifier participation
       const participantIndex = sol.participants.findIndex(p => 
         p.user.toString() === req.user.userId
       );
@@ -523,9 +427,7 @@ class SolController {
 
       const participant = sol.participants[participantIndex];
 
-      // Restrictions pour quitter
       if (sol.status === 'active') {
-        // Créateur ne peut pas quitter un sol actif
         if (sol.creator.toString() === req.user.userId) {
           return res.status(400).json({
             success: false,
@@ -534,7 +436,6 @@ class SolController {
           });
         }
 
-        // Si round déjà reçu, ne peut pas quitter
         const userRound = sol.rounds[participant.position - 1];
         if (userRound && userRound.status === 'completed') {
           return res.status(400).json({
@@ -544,9 +445,7 @@ class SolController {
           });
         }
 
-        // Pénalité pour départ
-        const penalty = sol.contributionAmount * 0.1; // 10% de pénalité
-        
+        const penalty = sol.contributionAmount * 0.1;
         return res.status(400).json({
           success: false,
           message: `Quitter ce sol actif entraîne une pénalité de ${penalty} ${sol.currency}`,
@@ -555,26 +454,19 @@ class SolController {
         });
       }
 
-      // Retirer le participant
       sol.participants.splice(participantIndex, 1);
-
-      // Réorganiser les positions
       sol.participants.forEach((p, index) => {
         p.position = index + 1;
       });
 
-      // Réorganiser les rounds
       sol.rounds = this.regenerateRounds(sol);
 
-      // Si moins de 3 participants restants, marquer comme annulé
       if (sol.participants.length < 3) {
         sol.status = 'cancelled';
         sol.cancellationReason = 'Insufficient participants';
       }
 
       await sol.save();
-
-      // Analytics quitter pour IA
       await this.collectLeaveAnalytics(req.user.userId, sol, reason);
 
       res.status(200).json({
@@ -602,17 +494,12 @@ class SolController {
   // 4. GESTION PAIEMENTS
   // ===================================================================
 
-  /**
-   * Effectuer un paiement de sol
-   * POST /api/sols/:id/payment
-   */
   static makePayment = async (req, res) => {
     try {
       const { id } = req.params;
       const { accountId, amount, roundIndex, notes } = req.body;
 
-      const sol = await Sol.findById(id)
-        .populate('participants.user', 'firstName lastName');
+      const sol = await Sol.findById(id).populate('participants.user', 'firstName lastName');
 
       if (!sol) {
         return res.status(404).json({
@@ -622,7 +509,6 @@ class SolController {
         });
       }
 
-      // Vérifier participation
       const participant = sol.participants.find(p => 
         p.user._id.toString() === req.user.userId
       );
@@ -635,7 +521,6 @@ class SolController {
         });
       }
 
-      // Vérifier compte utilisateur
       const account = await Account.findOne({
         _id: accountId,
         user: req.user.userId,
@@ -650,7 +535,6 @@ class SolController {
         });
       }
 
-      // Vérifier montant et solde
       if (amount !== sol.contributionAmount) {
         return res.status(400).json({
           success: false,
@@ -667,7 +551,6 @@ class SolController {
         });
       }
 
-      // Trouver le round actuel ou spécifique
       let targetRound;
       if (roundIndex !== undefined) {
         targetRound = sol.rounds[roundIndex];
@@ -683,7 +566,6 @@ class SolController {
         });
       }
 
-      // Vérifier si déjà payé pour ce round
       const existingPayment = targetRound.payments.find(p => 
         p.payer.toString() === req.user.userId
       );
@@ -696,14 +578,11 @@ class SolController {
         });
       }
 
-      // Session MongoDB pour transaction atomique
       const session = await mongoose.startSession();
       await session.withTransaction(async () => {
-        // Débiter le compte
         account.balance -= amount;
         await account.save({ session });
 
-        // Enregistrer paiement dans le round
         targetRound.payments.push({
           payer: req.user.userId,
           amount: amount,
@@ -712,7 +591,6 @@ class SolController {
           notes: notes
         });
 
-        // Créer transaction
         const transaction = new Transaction({
           user: req.user.userId,
           account: accountId,
@@ -730,7 +608,6 @@ class SolController {
             roundNumber: targetRound.roundNumber,
             recipient: targetRound.recipient
           },
-          // Tags pour IA analytics
           tags: [
             'sol_payment',
             `sol_type_${sol.type}`,
@@ -741,35 +618,28 @@ class SolController {
 
         await transaction.save({ session });
 
-        // Vérifier si tous ont payé pour ce round
         if (targetRound.payments.length === sol.participants.length) {
           targetRound.status = 'completed';
           targetRound.completedDate = new Date();
           
-          // Calculer et transférer le montant au bénéficiaire
           const totalAmount = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
           await this.transferToRecipient(sol, targetRound, totalAmount, session);
           
-          // Activer le round suivant
           const nextRoundIndex = sol.rounds.indexOf(targetRound) + 1;
           if (sol.rounds[nextRoundIndex]) {
             sol.rounds[nextRoundIndex].status = 'active';
             sol.rounds[nextRoundIndex].startDate = new Date();
           } else {
-            // Dernier round terminé
             sol.status = 'completed';
             sol.completedDate = new Date();
           }
         }
 
-        // Mettre à jour métriques du sol
         sol.metrics.totalCollected += amount;
         sol.lastActivityDate = new Date();
-
         await sol.save({ session });
       });
 
-      // Analytics paiement pour IA
       await this.collectPaymentAnalytics(req.user.userId, sol, targetRound, amount);
 
       res.status(200).json({
@@ -807,19 +677,14 @@ class SolController {
   };
 
   // ===================================================================
-  // 5. ANALYTICS ET RAPPORTS
+  // 5. ANALYTICS ET DÉCOUVERTE
   // ===================================================================
 
-  /**
-   * Analytics personnels des sols
-   * GET /api/sols/analytics/personal
-   */
   static getPersonalAnalytics = async (req, res) => {
     try {
       const { timeframe = 90 } = req.query;
       const startDate = new Date(Date.now() - timeframe * 24 * 60 * 60 * 1000);
 
-      // Récupérer tous les sols de l'utilisateur
       const userSols = await Sol.find({
         $or: [
           { creator: req.user.userId },
@@ -828,14 +693,12 @@ class SolController {
         createdAt: { $gte: startDate }
       }).populate('participants.user', 'firstName lastName');
 
-      // Récupérer transactions sol
       const solTransactions = await Transaction.find({
         user: req.user.userId,
         category: 'sols',
         date: { $gte: startDate }
       });
 
-      // Calculer analytics de base
       const analytics = {
         overview: {
           totalSols: userSols.length,
@@ -880,7 +743,6 @@ class SolController {
         }
       };
 
-      // Collecter ces analytics pour alimenter l'IA future
       await this.storeAnalyticsForIA(req.user.userId, analytics);
 
       res.status(200).json({
@@ -904,23 +766,12 @@ class SolController {
     }
   };
 
-  /**
-   * Découverte de sols ouverts
-   * GET /api/sols/discover
-   */
   static discoverSols = async (req, res) => {
     try {
       const { 
-        type,
-        minAmount,
-        maxAmount,
-        currency = 'HTG',
-        region,
-        page = 1,
-        limit = 20 
+        type, minAmount, maxAmount, currency = 'HTG', region, page = 1, limit = 20 
       } = req.query;
 
-      // Construire filtre de recherche
       const filter = {
         status: 'recruiting',
         isPrivate: false,
@@ -935,21 +786,15 @@ class SolController {
         filter.contributionAmount.$lte = parseInt(maxAmount);
       }
 
-      // Pagination
       const skip = (parseInt(page) - 1) * parseInt(limit);
 
-      // Rechercher sols avec scoring de pertinence
       const availableSols = await Sol.find(filter)
         .populate('creator', 'firstName lastName region')
         .populate('participants.user', 'firstName lastName')
-        .sort({ 
-          createdAt: -1,
-          participantCount: -1 // Privilégier sols avec plus de participants
-        })
+        .sort({ createdAt: -1, participantCount: -1 })
         .skip(skip)
         .limit(parseInt(limit));
 
-      // Calculer score de pertinence personnalisé
       const userSols = await Sol.find({
         $or: [
           { creator: req.user.userId },
@@ -970,7 +815,6 @@ class SolController {
         };
       }).sort((a, b) => b.relevanceScore - a.relevanceScore);
 
-      // Analytics discovery pour IA
       await this.collectDiscoveryAnalytics(req.user.userId, filter, scoredSols);
 
       res.status(200).json({
@@ -1003,12 +847,9 @@ class SolController {
   };
 
   // ===================================================================
-  // 6. MÉTHODES UTILITAIRES PRIVÉES
+  // MÉTHODES UTILITAIRES
   // ===================================================================
 
-  /**
-   * Générer code d'accès unique
-   */
   static async generateUniqueAccessCode() {
     let code;
     let exists = true;
@@ -1021,9 +862,6 @@ class SolController {
     return code;
   }
 
-  /**
-   * Générer rounds automatiquement
-   */
   static generateRounds(maxParticipants, startDate, frequency) {
     const rounds = [];
     let currentDate = new Date(startDate);
@@ -1034,20 +872,16 @@ class SolController {
         startDate: new Date(currentDate),
         endDate: new Date(currentDate.getTime() + this.getFrequencyDuration(frequency)),
         status: i === 0 ? 'pending' : 'scheduled',
-        recipient: null, // Assigné quand participant rejoint
+        recipient: null,
         payments: []
       });
 
-      // Incrémenter date selon fréquence
       currentDate = this.addFrequencyToDate(currentDate, frequency);
     }
 
     return rounds;
   }
 
-  /**
-   * Calculer durée fréquence en millisecondes
-   */
   static getFrequencyDuration(frequency) {
     const durations = {
       'weekly': 7 * 24 * 60 * 60 * 1000,
@@ -1058,9 +892,6 @@ class SolController {
     return durations[frequency] || durations.monthly;
   }
 
-  /**
-   * Ajouter fréquence à une date
-   */
   static addFrequencyToDate(date, frequency) {
     const newDate = new Date(date);
     
@@ -1084,9 +915,6 @@ class SolController {
     return newDate;
   }
 
-  /**
-   * Calculer tours restants avant utilisateur
-   */
   static calculateTurnsUntilUser(sol, userId) {
     const userParticipant = sol.participants.find(p => 
       p.user.toString() === userId || p.user._id.toString() === userId
@@ -1104,12 +932,8 @@ class SolController {
       sol.rounds.length - currentRound + userRound;
   }
 
-  /**
-   * Transférer montant au bénéficiaire du round
-   */
   static async transferToRecipient(sol, round, amount, session) {
     try {
-      // Trouver compte principal du bénéficiaire
       const recipientAccount = await Account.findOne({
         user: round.recipient,
         isPrimary: true,
@@ -1117,11 +941,9 @@ class SolController {
       }).session(session);
 
       if (recipientAccount) {
-        // Créditer compte bénéficiaire
         recipientAccount.balance += amount;
         await recipientAccount.save({ session });
 
-        // Créer transaction de réception
         const incomeTransaction = new Transaction({
           user: round.recipient,
           account: recipientAccount._id,
@@ -1147,7 +969,6 @@ class SolController {
         });
 
         await incomeTransaction.save({ session });
-
         round.transferTransaction = incomeTransaction._id;
       }
 
@@ -1159,131 +980,92 @@ class SolController {
   }
 
   // ===================================================================
-  // 7. MÉTHODES ANALYTICS POUR IA
+  // MÉTHODES ANALYTICS POUR IA
   // ===================================================================
 
-  /**
-   * Collecter analytics création pour IA
-   */
-  static async collectCreationAnalytics(userId, sol) {
+  static async calculateUserAvgContribution(userId) {
     try {
-      const analyticsData = {
-        userId: userId,
-        event: 'sol_creation',
-        solData: {
-          type: sol.type,
-          amount: sol.contributionAmount,
-          currency: sol.currency,
-          participants: sol.maxParticipants,
-          frequency: sol.frequency,
-          isPrivate: sol.isPrivate
-        },
-        context: {
-          timeOfDay: new Date().getHours(),
-          dayOfWeek: new Date().getDay(),
-          timestamp: new Date()
-        },
+      const userSols = await Sol.find({
+        $or: [
+          { creator: userId },
+          { 'participants.user': userId }
+        ]
+      });
+
+      if (userSols.length === 0) return 0;
+
+      const totalContribution = userSols.reduce((sum, sol) => sum + sol.contributionAmount, 0);
+      return Math.round(totalContribution / userSols.length);
+    } catch (error) {
+      console.error('❌ Erreur calcul contribution moyenne:', error.message);
+      return 0;
+    }
+  }
+
+  static async getUserPreferredType(userId) {
+    try {
+      const userSols = await Sol.find({
+        $or: [
+          { creator: userId },
+          { 'participants.user': userId }
+        ]
+      });
+
+      if (userSols.length === 0) return 'classic';
+
+      const typeCount = {};
+      userSols.forEach(sol => {
+        typeCount[sol.type] = (typeCount[sol.type] || 0) + 1;
+      });
+
+      return Object.keys(typeCount).reduce((a, b) => 
+        typeCount[a] > typeCount[b] ? a : b
+      );
+    } catch (error) {
+      console.error('❌ Erreur type préféré:', error.message);
+      return 'classic';
+    }
+  }
+
+  static async generateUserSolAnalytics(userId, sols) {
+    try {
+      if (!sols || sols.length === 0) {
+        return {
+          totalSols: 0,
+          activeSols: 0,
+          completedSols: 0,
+          avgContribution: 0,
+          patterns: {
+            preferredType: 'classic',
+            avgParticipants: 0,
+            successRate: 0
+          }
+        };
+      }
+
+      const analytics = {
+        totalSols: sols.length,
+        activeSols: sols.filter(s => s.status === 'active').length,
+        completedSols: sols.filter(s => s.status === 'completed').length,
+        avgContribution: Math.round(
+          sols.reduce((sum, s) => sum + s.contributionAmount, 0) / sols.length
+        ),
         patterns: {
-          previousSols: await Sol.countDocuments({ creator: userId }),
-          avgAmount: await this.calculateUserAvgContribution(userId),
-          preferredType: await this.getUserPreferredType(userId)
+          preferredType: this.analyzeSolTypePreferences(sols)[0]?.type || 'classic',
+          avgParticipants: Math.round(
+            sols.reduce((sum, s) => s.participants.length, 0) / sols.length
+          ),
+          successRate: this.calculateSuccessRate(sols, userId)
         }
       };
 
-      // Sauvegarder pour traitement IA futur
-      // TODO: Intégrer avec service HabitInsight en Phase 7
-      console.log('📊 Sol Creation Analytics:', analyticsData.event);
-      
+      return analytics;
     } catch (error) {
-      console.error('❌ Erreur collecte analytics création:', error.message);
+      console.error('❌ Erreur analytics génération:', error.message);
+      return null;
     }
   }
 
-  /**
-   * Collecter analytics paiement pour IA
-   */
-  static async collectPaymentAnalytics(userId, sol, round, amount) {
-    try {
-      const payment = round.payments.find(p => p.payer.toString() === userId);
-      const participant = sol.participants.find(p => p.user.toString() === userId);
-
-      const analyticsData = {
-        userId: userId,
-        event: 'sol_payment',
-        paymentData: {
-          amount: amount,
-          onTime: this.isPaymentOnTime(payment, round),
-          daysSinceRoundStart: Math.ceil((payment.date - round.startDate) / (1000 * 60 * 60 * 24)),
-          roundNumber: round.roundNumber,
-          userPosition: participant?.position
-        },
-        solContext: {
-          type: sol.type,
-          frequency: sol.frequency,
-          totalParticipants: sol.participants.length,
-          isCreator: sol.creator.toString() === userId
-        },
-        behavioral: {
-          paymentTiming: this.analyzePaymentTiming([payment]),
-          consistency: await this.calculatePaymentConsistency(userId),
-          riskLevel: this.assessUserRiskLevel(userId)
-        }
-      };
-
-      console.log('📊 Sol Payment Analytics:', analyticsData.event);
-      
-    } catch (error) {
-      console.error('❌ Erreur collecte analytics paiement:', error.message);
-    }
-  }
-
-  /**
-   * Collecter analytics vue pour IA
-   */
-  static async collectViewAnalytics(userId, solId) {
-    try {
-      const analyticsData = {
-        userId: userId,
-        event: 'sol_view',
-        solId: solId,
-        context: {
-          timestamp: new Date(),
-          timeOfDay: new Date().getHours(),
-          dayOfWeek: new Date().getDay()
-        }
-      };
-
-      console.log('📊 Sol View Analytics:', analyticsData.event);
-      
-    } catch (error) {
-      console.error('❌ Erreur collecte analytics vue:', error.message);
-    }
-  }
-
-  /**
-   * Stocker analytics pour IA future
-   */
-  static async storeAnalyticsForIA(userId, analytics) {
-    try {
-      // TODO: Phase 7 - Sauvegarder dans HabitInsight collection
-      const iaData = {
-        userId: userId,
-        category: 'sols',
-        insights: analytics,
-        generatedAt: new Date(),
-        dataQuality: this.assessAnalyticsQuality(analytics)
-      };
-
-      console.log('🤖 IA Analytics Stored for future processing');
-      
-    } catch (error) {
-      console.error('❌ Erreur stockage analytics IA:', error.message);
-    }
-  }
-
-  /**
-   * Analyser préférences types de sols
-   */
   static analyzeSolTypePreferences(userSols) {
     const typeCount = {};
     userSols.forEach(sol => {
@@ -1299,9 +1081,6 @@ class SolController {
       .sort((a, b) => b.count - a.count);
   }
 
-  /**
-   * Analyser timing des paiements
-   */
   static analyzePaymentTiming(transactions) {
     if (transactions.length === 0) return null;
 
@@ -1329,9 +1108,34 @@ class SolController {
     return timingData;
   }
 
-  /**
-   * Calculer taux de succès
-   */
+  static analyzeParticipationPatterns(userSols, userId) {
+    const patterns = {
+      asCreator: 0,
+      asParticipant: 0,
+      avgSolSize: 0,
+      preferredPositions: []
+    };
+
+    userSols.forEach(sol => {
+      if (sol.creator.toString() === userId) {
+        patterns.asCreator++;
+      } else {
+        patterns.asParticipant++;
+        const userParticipant = sol.participants.find(p => 
+          p.user.toString() === userId || p.user._id?.toString() === userId
+        );
+        if (userParticipant) {
+          patterns.preferredPositions.push(userParticipant.position);
+        }
+      }
+    });
+
+    patterns.avgSolSize = userSols.length > 0 ? 
+      Math.round(userSols.reduce((sum, s) => sum + s.participants.length, 0) / userSols.length) : 0;
+
+    return patterns;
+  }
+
   static calculateSuccessRate(userSols, userId) {
     const completedSols = userSols.filter(sol => sol.status === 'completed');
     const totalSols = userSols.filter(sol => sol.status !== 'recruiting');
@@ -1340,39 +1144,238 @@ class SolController {
       Math.round((completedSols.length / totalSols.length) * 100) : 0;
   }
 
-  /**
-   * Générer recommandations personnelles
-   */
+  static calculateMonthlyCommitment(userSols) {
+    try {
+      const activeSols = userSols.filter(sol => sol.status === 'active');
+      
+      return activeSols.reduce((total, sol) => {
+        const monthlyAmount = sol.frequency === 'weekly' ? sol.contributionAmount * 4 :
+                             sol.frequency === 'biweekly' ? sol.contributionAmount * 2 :
+                             sol.frequency === 'quarterly' ? sol.contributionAmount / 3 :
+                             sol.contributionAmount;
+        
+        return total + monthlyAmount;
+      }, 0);
+    } catch (error) {
+      console.error('❌ Erreur calcul engagement mensuel:', error.message);
+      return 0;
+    }
+  }
+
+  static calculateROI(userSols, userId) {
+    try {
+      const completedSols = userSols.filter(sol => sol.status === 'completed');
+      
+      if (completedSols.length === 0) return { roi: 0, analysis: 'Aucun sol terminé' };
+
+      let totalInvested = 0;
+      let totalReceived = 0;
+
+      completedSols.forEach(sol => {
+        const userParticipant = sol.participants.find(p => 
+          p.user.toString() === userId || p.user._id?.toString() === userId
+        );
+        
+        if (userParticipant) {
+          totalInvested += sol.contributionAmount * (sol.rounds?.length || sol.maxParticipants);
+          totalReceived += userParticipant.receivedAmount || (sol.contributionAmount * sol.maxParticipants);
+        }
+      });
+
+      const roi = totalInvested > 0 ? ((totalReceived - totalInvested) / totalInvested) * 100 : 0;
+      
+      return {
+        roi: Math.round(roi * 100) / 100,
+        totalInvested,
+        totalReceived,
+        analysis: roi > 0 ? 'ROI positif' : roi === 0 ? 'ROI neutre' : 'ROI négatif'
+      };
+    } catch (error) {
+      console.error('❌ Erreur calcul ROI:', error.message);
+      return { roi: 0, analysis: 'Erreur calcul' };
+    }
+  }
+
+  static analyzeCashFlowImpact(solTransactions) {
+    try {
+      const monthlyFlow = {};
+      
+      solTransactions.forEach(tx => {
+        const monthKey = `${tx.date.getFullYear()}-${tx.date.getMonth() + 1}`;
+        
+        if (!monthlyFlow[monthKey]) {
+          monthlyFlow[monthKey] = { out: 0, in: 0 };
+        }
+        
+        if (tx.type === 'expense') {
+          monthlyFlow[monthKey].out += tx.amount;
+        } else if (tx.type === 'income') {
+          monthlyFlow[monthKey].in += tx.amount;
+        }
+      });
+
+      const months = Object.keys(monthlyFlow);
+      if (months.length === 0) {
+        return { avgMonthlyOut: 0, avgMonthlyIn: 0, netFlow: 0, volatility: 0 };
+      }
+
+      const avgOut = months.reduce((sum, month) => sum + monthlyFlow[month].out, 0) / months.length;
+      const avgIn = months.reduce((sum, month) => sum + monthlyFlow[month].in, 0) / months.length;
+
+      return {
+        avgMonthlyOut: Math.round(avgOut),
+        avgMonthlyIn: Math.round(avgIn),
+        netFlow: Math.round(avgIn - avgOut),
+        volatility: this.calculateVolatility(Object.values(monthlyFlow))
+      };
+    } catch (error) {
+      console.error('❌ Erreur analyse cash flow:', error.message);
+      return { avgMonthlyOut: 0, avgMonthlyIn: 0, netFlow: 0, volatility: 0 };
+    }
+  }
+
+  static calculateVolatility(flowData) {
+    try {
+      if (flowData.length < 2) return 0;
+      
+      const netFlows = flowData.map(f => f.in - f.out);
+      const mean = netFlows.reduce((sum, flow) => sum + flow, 0) / netFlows.length;
+      const variance = netFlows.reduce((sum, flow) => sum + Math.pow(flow - mean, 2), 0) / netFlows.length;
+      
+      return Math.round(Math.sqrt(variance));
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  static calculateCompletionRate(userSols, userId) {
+    try {
+      const totalSols = userSols.filter(sol => sol.status !== 'recruiting').length;
+      const completedSols = userSols.filter(sol => sol.status === 'completed').length;
+      
+      return totalSols > 0 ? Math.round((completedSols / totalSols) * 100) : 0;
+    } catch (error) {
+      console.error('❌ Erreur taux completion:', error.message);
+      return 0;
+    }
+  }
+
+  static calculatePunctualityScore(solTransactions) {
+    try {
+      if (solTransactions.length === 0) return 50;
+      
+      const onTimeTransactions = solTransactions.filter(tx => {
+        const txDate = new Date(tx.date);
+        return txDate.getDate() <= 5;
+      });
+
+      return Math.round((onTimeTransactions.length / solTransactions.length) * 100);
+    } catch (error) {
+      console.error('❌ Erreur score ponctualité:', error.message);
+      return 50;
+    }
+  }
+
+  static calculateRiskProfile(userSols) {
+    try {
+      if (userSols.length === 0) return 'nouveau';
+      
+      const completedRate = this.calculateCompletionRate(userSols);
+      const cancelledSols = userSols.filter(s => s.status === 'cancelled').length;
+
+      if (completedRate >= 90 && cancelledSols === 0) return 'très faible';
+      if (completedRate >= 75) return 'faible';
+      if (completedRate >= 50) return 'moyen';
+      if (cancelledSols > 2 || completedRate < 30) return 'élevé';
+      
+      return 'moyen';
+    } catch (error) {
+      console.error('❌ Erreur profil risque:', error.message);
+      return 'moyen';
+    }
+  }
+
+  static async predictNextContribution(userId, userSols) {
+    try {
+      if (userSols.length === 0) {
+        return { amount: 1000, confidence: 0, reasoning: 'Nouvel utilisateur' };
+      }
+
+      const avgAmount = userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length;
+      const recentSols = userSols.slice(-3);
+      const trend = recentSols.length > 1 ? 
+        (recentSols[recentSols.length - 1].contributionAmount - recentSols[0].contributionAmount) / recentSols.length : 0;
+
+      const predictedAmount = Math.round(avgAmount + trend);
+      const confidence = Math.min(userSols.length * 20, 90);
+
+      return {
+        amount: Math.max(predictedAmount, 500),
+        confidence: confidence,
+        reasoning: `Basé sur ${userSols.length} sols précédents`
+      };
+    } catch (error) {
+      console.error('❌ Erreur prédiction contribution:', error.message);
+      return { amount: 1000, confidence: 0, reasoning: 'Erreur calcul' };
+    }
+  }
+
+  static predictCompletionProbability(userSols, userId) {
+    try {
+      if (userSols.length === 0) return 70;
+
+      const completionRate = this.calculateCompletionRate(userSols, userId);
+      const cancelledRate = (userSols.filter(s => s.status === 'cancelled').length / userSols.length) * 100;
+
+      let probability = completionRate;
+      
+      if (cancelledRate > 20) probability -= 15;
+      if (userSols.length > 5) probability += 10;
+
+      return Math.max(Math.min(Math.round(probability), 95), 5);
+    } catch (error) {
+      return 70;
+    }
+  }
+
+  static suggestOptimalTiming(solTransactions) {
+    try {
+      if (solTransactions.length === 0) {
+        return { day: 1, reasoning: 'Début de mois recommandé par défaut' };
+      }
+
+      const dayFrequency = {};
+      solTransactions.forEach(tx => {
+        const day = new Date(tx.date).getDate();
+        dayFrequency[day] = (dayFrequency[day] || 0) + 1;
+      });
+
+      const optimalDay = Object.keys(dayFrequency).reduce((a, b) => 
+        dayFrequency[a] > dayFrequency[b] ? a : b
+      );
+
+      return {
+        day: parseInt(optimalDay),
+        reasoning: `Votre pattern habituel: jour ${optimalDay} du mois`
+      };
+    } catch (error) {
+      return { day: 1, reasoning: 'Début de mois par défaut' };
+    }
+  }
+
   static async generatePersonalRecommendations(userId, userSols) {
     const recommendations = [];
 
-    // Analyse patterns existants
     const avgAmount = userSols.length > 0 ? 
       userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length : 0;
-
-    const hasActiveAsCreator = userSols.some(s => 
-      s.creator.toString() === userId && s.status === 'active'
-    );
-
     const completionRate = this.calculateSuccessRate(userSols, userId);
 
-    // Recommandations basées sur patterns
     if (avgAmount < 1000) {
       recommendations.push({
         type: 'amount_optimization',
         title: 'Augmenter montant contribution',
-        description: 'Vos contributions moyennes sont faibles. Augmenter pourrait accélérer vos objectifs.',
+        description: 'Vos contributions moyennes sont faibles.',
         confidence: 0.7,
-        actionable: true
-      });
-    }
-
-    if (!hasActiveAsCreator && userSols.length > 2) {
-      recommendations.push({
-        type: 'leadership_opportunity',
-        title: 'Créer votre propre sol',
-        description: 'Vous avez l\'expérience pour organiser un sol selon vos besoins.',
-        confidence: 0.8,
         actionable: true
       });
     }
@@ -1381,7 +1384,7 @@ class SolController {
       recommendations.push({
         type: 'commitment_improvement',
         title: 'Améliorer engagement',
-        description: 'Choisir des montants plus adaptés à votre budget pourrait améliorer votre taux de réussite.',
+        description: 'Choisir des montants adaptés améliorerait votre taux de réussite.',
         confidence: 0.9,
         actionable: true
       });
@@ -1390,9 +1393,6 @@ class SolController {
     return recommendations;
   }
 
-  /**
-   * Estimer qualité des données pour IA
-   */
   static assessDataQuality(sols, transactions) {
     let score = 0;
     
@@ -1404,28 +1404,132 @@ class SolController {
     return Math.min(score, 100);
   }
 
-  /**
-   * Calculer score de pertinence pour découverte
-   */
   static calculateRelevanceScore(sol, userSols, user) {
     let score = 0;
 
-    // Basé sur historique utilisateur
     const userTypes = userSols.map(s => s.type);
     if (userTypes.includes(sol.type)) score += 30;
 
-    const userAmounts = userSols.map(s => s.contributionAmount);
-    const avgAmount = userAmounts.length > 0 ? 
-      userAmounts.reduce((sum, a) => sum + a, 0) / userAmounts.length : 0;
-    
-    if (Math.abs(sol.contributionAmount - avgAmount) < avgAmount * 0.3) score += 25;
-
-    // Autres facteurs
     if (sol.participants.length > sol.maxParticipants * 0.5) score += 20;
     if (sol.currency === 'HTG') score += 15;
     if (!sol.isPrivate) score += 10;
 
     return Math.min(score, 100);
+  }
+
+  // Méthodes stubs
+  static async schedulePaymentNotifications(sol) {
+    console.log('Planning notifications pour sol:', sol.name);
+  }
+
+  static async collectCreationAnalytics(userId, sol) {
+    console.log('Creation analytics pour:', userId);
+  }
+
+  static async collectJoinAnalytics(userId, sol) {
+    console.log('Join analytics pour:', userId);
+  }
+
+  static async collectLeaveAnalytics(userId, sol, reason) {
+    console.log('Leave analytics pour:', userId);
+  }
+
+  static async collectPaymentAnalytics(userId, sol, round, amount) {
+    console.log('Payment analytics pour:', userId);
+  }
+
+  static async collectViewAnalytics(userId, solId) {
+    console.log('View analytics pour:', userId);
+  }
+
+  static async collectDiscoveryAnalytics(userId, filter, results) {
+    console.log('Discovery analytics pour:', userId);
+  }
+
+  static async storeAnalyticsForIA(userId, analytics) {
+    console.log('Storing IA analytics pour:', userId);
+  }
+
+  static async generateSolRecommendations(sol, userId) {
+    return [{
+      type: 'timing_optimization',
+      title: 'Optimiser timing paiements',
+      description: 'Payer en début de mois améliore votre score',
+      confidence: 0.8
+    }];
+  }
+
+  static async generateDiscoveryRecommendations(userId, userSols) {
+    return [{
+      type: 'diversification',
+      title: 'Diversifier types de sols',
+      description: 'Essayer différents types peut optimiser vos rendements',
+      confidence: 0.7
+    }];
+  }
+
+  static regenerateRounds(sol) {
+    return this.generateRounds(sol.participants.length, sol.startDate, sol.frequency);
+  }
+
+  static estimateStartDate(sol) {
+    const spotsLeft = sol.maxParticipants - sol.participants.length;
+    const estimatedDays = spotsLeft * 2;
+    const estimatedDate = new Date();
+    estimatedDate.setDate(estimatedDate.getDate() + estimatedDays);
+    return estimatedDate;
+  }
+
+  static calculateCompatibility(sol, userSols) {
+    if (userSols.length === 0) return 'nouveau';
+    
+    const avgAmount = userSols.reduce((sum, s) => sum + s.contributionAmount, 0) / userSols.length;
+    const amountDiff = Math.abs(sol.contributionAmount - avgAmount) / avgAmount;
+    
+    if (amountDiff < 0.2) return 'élevée';
+    if (amountDiff < 0.5) return 'moyenne';
+    return 'faible';
+  }
+
+  static assessRiskLevel(sol) {
+    let riskScore = 0;
+    
+    if (sol.participants.length < sol.maxParticipants * 0.5) riskScore += 2;
+    if (sol.contributionAmount > 5000) riskScore += 1;
+    if (sol.isPrivate) riskScore += 1;
+    
+    if (riskScore >= 3) return 'élevé';
+    if (riskScore === 2) return 'moyen';
+    return 'faible';
+  }
+
+  static async getAvailableTypes() {
+    const types = await Sol.distinct('type', { status: 'recruiting', isPrivate: false });
+    return types.map(type => ({ value: type, label: type }));
+  }
+
+  static async getAmountRanges(currency) {
+    const amounts = await Sol.find({ 
+      status: 'recruiting', 
+      currency: currency,
+      isPrivate: false 
+    }).select('contributionAmount');
+    
+    if (amounts.length === 0) return [];
+    
+    const values = amounts.map(a => a.contributionAmount).sort((a, b) => a - b);
+    const min = values[0];
+    const max = values[values.length - 1];
+    const mid = Math.round((min + max) / 2);
+    
+    return [
+      { min: min, max: mid, label: `${min} - ${mid} ${currency}` },
+      { min: mid, max: max, label: `${mid} - ${max} ${currency}` }
+    ];
+  }
+
+  static async getPopularRegions() {
+    return [{ region: 'Port-au-Prince', count: 5 }];
   }
 }
 
@@ -1433,9 +1537,6 @@ class SolController {
 // VALIDATIONS MIDDLEWARE
 // ===================================================================
 
-/**
- * Validations pour création de sol
- */
 SolController.validateCreateSol = [
   body('name')
     .trim()
@@ -1477,9 +1578,6 @@ SolController.validateCreateSol = [
     .withMessage('Devise non supportée')
 ];
 
-/**
- * Validations pour rejoindre sol
- */
 SolController.validateJoinSol = [
   body('accessCode')
     .isLength({ min: 6, max: 6 })
@@ -1487,9 +1585,6 @@ SolController.validateJoinSol = [
     .withMessage('Code d\'accès invalide (6 caractères alphanumériques)')
 ];
 
-/**
- * Validations pour paiement
- */
 SolController.validatePayment = [
   body('accountId')
     .isMongoId()
