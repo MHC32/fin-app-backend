@@ -384,7 +384,7 @@ const generateReport = () => {
 const main = async () => {
   try {
     await setupTests();
-    await runTests();
+    await runTests();habitAnalysisService.js
     generateReport();
   } catch (error) {
     console.error('\n❌ ERREUR FATALE:', error.message);

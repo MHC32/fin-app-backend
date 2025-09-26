@@ -100,7 +100,7 @@ app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/sols', require('./routes/sols'));
 
 // TODO Phase 6: Routes Investments
-// app.use('/api/investments', require('./routes/investments'));
+app.use('/api/investments', require('./routes/investments'));
 
 // TODO Phase 7: Routes Uploads
 // app.use('/api/uploads', require('./routes/uploads'));
