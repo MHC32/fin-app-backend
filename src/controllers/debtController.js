@@ -302,19 +302,39 @@ class DebtController {
                 });
             }
 
-            // Créer transaction associée si demandé
+            // ✅ CORRECTION : Récupérer un compte valide pour l'utilisateur
             let transactionId = null;
             if (createTransaction) {
+                const Account = require('../models/Account');
+                const userAccount = await Account.findOne({ user: userId });
+
+                if (!userAccount) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Aucun compte trouvé pour créer la transaction'
+                    });
+                }
+
+                // ✅ CORRECTION : Montant toujours positif avec bon type
+                const transactionAmount = Math.abs(amount);
+                const transactionType = debt.type === 'debt' ? 'expense' : 'income';
+
+                // ✅ CORRECTION : Catégorie valide
+                const validCategories = ['food', 'transport', 'housing', 'health', 'education', 'entertainment', 'other'];
+                const transactionCategory = validCategories.includes('other') ? 'other' : validCategories[0];
+
                 const transaction = await Transaction.create({
                     user: userId,
-                    account: userId,  // ✅ FIX : Utiliser userId comme account temporaire
-                    type: debt.type === 'debt' ? 'expense' : 'income',
-                    amount: debt.type === 'debt' ? -Math.abs(amount) : Math.abs(amount),
+                    account: userAccount._id,  // ✅ ID de compte valide
+                    type: transactionType,
+                    amount: transactionAmount, // ✅ Montant positif
                     currency: debt.currency,
-                    category: 'autre',  // ✅ FIX : Utiliser catégorie valide
+                    category: transactionCategory, // ✅ Catégorie valide
                     description: `Paiement ${debt.type === 'debt' ? 'dette' : 'créance'} - ${debt.contact.name}`,
                     date: date || new Date(),
-                    paymentMethod: paymentMethod || 'cash'
+                    paymentMethod: paymentMethod || 'cash',
+                    // ✅ Ajouter une référence à la dette
+                    debtReference: debt._id
                 });
                 transactionId = transaction._id;
             }
@@ -328,15 +348,18 @@ class DebtController {
                 transactionReference: transactionId
             });
 
+            // Recharger la dette pour avoir les données fraîches
+            const updatedDebt = await Debt.findById(id);
+
             res.json({
                 success: true,
                 message: 'Paiement enregistré',
                 data: {
-                    debt,
-                    amountPaid: debt.amountPaid,
-                    amountRemaining: debt.amountRemaining,
-                    status: debt.status,
-                    percentagePaid: debt.percentagePaid
+                    debt: updatedDebt,
+                    amountPaid: updatedDebt.amountPaid,
+                    amountRemaining: updatedDebt.amountRemaining,
+                    status: updatedDebt.status,
+                    percentagePaid: updatedDebt.percentagePaid
                 }
             });
 
@@ -488,10 +511,10 @@ class DebtController {
                 });
             }
 
-            if (!debt.interest.hasInterest) {
+            if (!debt.interest.hasInterest || !debt.interest.rate) {
                 return res.status(400).json({
                     success: false,
-                    error: 'Cette dette n\'a pas d\'intérêts'
+                    error: 'Cette dette n\'a pas d\'intérêts configurés'
                 });
             }
 
@@ -504,7 +527,8 @@ class DebtController {
                 data: {
                     interestAmount: interest,
                     totalInterest: debt.interest.totalInterest,
-                    amountRemaining: debt.amountRemaining
+                    amountRemaining: debt.amountRemaining,
+                    newTotal: debt.amountRemaining + interest
                 }
             });
 
