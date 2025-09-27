@@ -1,10 +1,17 @@
 // src/controllers/aiController.js
-// Controller pour endpoints Intelligence Artificielle
+// Controller pour endpoints Intelligence Artificielle - VERSION COMPLÈTE
+// Intégration: HabitAnalysisService + MLService + AdviceEngine + PredictionService
 
 const HabitAnalysisService = require('../services/habitAnalysisService');
 const MLService = require('../services/mlService');
+const AdviceEngine = require('../services/adviceEngine');
+const PredictionService = require('../services/predictionService');
 
 class AIController {
+
+  // ===================================================================
+  // ANALYSES PERSONNELLES
+  // ===================================================================
 
   /**
    * GET /api/ai/analysis/personal
@@ -53,104 +60,8 @@ class AIController {
   }
 
   /**
-   * GET /api/ai/advice/personal
-   * Conseils personnalisés basés sur patterns réels
-   */
-  static async getPersonalAdvice(req, res) {
-    try {
-      const { userId } = req.user;
-      const days = parseInt(req.query.days) || 90;
-
-      // Récupérer données pour conseils
-      const [patterns, health, habits] = await Promise.all([
-        HabitAnalysisService.analyzeSpendingPatterns(userId, days),
-        HabitAnalysisService.calculateFinancialHealth(userId),
-        HabitAnalysisService.identifyHabits(userId, days)
-      ]);
-
-      const advice = [];
-
-      // Conseils basés sur catégories dominantes
-      if (patterns.hasData && patterns.categoryBreakdown?.length > 0) {
-        const topCategory = patterns.categoryBreakdown[0];
-        
-        if (topCategory.percentage > 40) {
-          advice.push({
-            type: 'category_optimization',
-            priority: 'high',
-            title: `Optimiser vos dépenses en ${topCategory.name}`,
-            description: `${topCategory.name} représente ${topCategory.percentage}% de vos dépenses (${topCategory.total} HTG). Voici des pistes d'optimisation.`,
-            category: topCategory.category,
-            impact: 'high',
-            potentialSavings: Math.round(topCategory.total * 0.15)
-          });
-        }
-      }
-
-      // Conseils basés santé financière
-      if (health.score < 60) {
-        advice.push({
-          type: 'financial_health',
-          priority: 'medium',
-          title: 'Améliorer votre santé financière',
-          description: `Score actuel: ${health.score}/100. ${health.recommendations.join('. ')}`,
-          impact: 'medium',
-          actionable: true
-        });
-      }
-
-      // Conseils basés habitudes
-      if (habits.hasData && habits.habits?.length > 0) {
-        const recurringHabit = habits.habits.find(h => h.frequency === 'très_fréquent');
-        if (recurringHabit) {
-          advice.push({
-            type: 'habit_awareness',
-            priority: 'low',
-            title: 'Habitude détectée',
-            description: recurringHabit.description,
-            impact: 'low',
-            actionable: false
-          });
-        }
-      }
-
-      // Conseils génériques si aucune donnée spécifique
-      if (advice.length === 0) {
-        advice.push({
-          type: 'general',
-          priority: 'low',
-          title: 'Suivez vos dépenses régulièrement',
-          description: 'Plus vous enregistrez de transactions, plus nos conseils seront personnalisés et pertinents.',
-          impact: 'medium',
-          actionable: true
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          advice: advice.sort((a, b) => {
-            const priority = { high: 3, medium: 2, low: 1 };
-            return priority[b.priority] - priority[a.priority];
-          }),
-          totalAdvice: advice.length,
-          generatedAt: new Date()
-        }
-      });
-
-    } catch (error) {
-      console.error('Erreur getPersonalAdvice:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Erreur lors de la génération des conseils',
-        message: error.message
-      });
-    }
-  }
-
-  /**
    * GET /api/ai/anomalies
-   * Détection des anomalies dans les dépenses
+   * Détection anomalies dans dépenses
    */
   static async getAnomalies(req, res) {
     try {
@@ -163,9 +74,8 @@ class AIController {
         success: true,
         data: {
           hasData: anomalies.hasData,
-          count: anomalies.anomalies?.length || 0,
-          statistics: anomalies.statistics,
           anomalies: anomalies.anomalies || [],
+          totalAnomalies: anomalies.anomalies?.length || 0,
           period: { days },
           analyzedAt: new Date()
         }
@@ -175,99 +85,7 @@ class AIController {
       console.error('Erreur getAnomalies:', error);
       res.status(500).json({
         success: false,
-        error: 'Erreur lors de la détection des anomalies',
-        message: error.message
-      });
-    }
-  }
-
-  /**
-   * POST /api/ai/classify
-   * Classifier automatiquement une transaction
-   */
-  static async classifyTransaction(req, res) {
-    try {
-      const { description, amount, currency = 'HTG' } = req.body;
-
-      if (!description || !amount) {
-        return res.status(400).json({
-          success: false,
-          error: 'Description et montant requis'
-        });
-      }
-
-      const classification = await MLService.classifyTransaction(
-        description,
-        amount,
-        { currency }
-      );
-
-      res.json({
-        success: true,
-        data: {
-          input: { description, amount, currency },
-          classification: {
-            category: classification.category,
-            confidence: classification.confidence,
-            matchedKeywords: classification.matchedKeywords,
-            alternatives: classification.alternatives,
-            method: classification.method
-          },
-          suggestion: {
-            shouldUse: classification.confidence >= 0.7,
-            message: classification.confidence >= 0.7 
-              ? `Nous suggérons la catégorie "${classification.category}" avec ${Math.round(classification.confidence * 100)}% de confiance`
-              : 'Classification incertaine, veuillez choisir manuellement'
-          }
-        }
-      });
-
-    } catch (error) {
-      console.error('Erreur classifyTransaction:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Erreur lors de la classification',
-        message: error.message
-      });
-    }
-  }
-
-  /**
-   * GET /api/ai/predictions
-   * Prédictions dépenses futures
-   */
-  static async getPredictions(req, res) {
-    try {
-      const { userId } = req.user;
-      const type = req.query.type || 'monthly';
-
-      let prediction;
-
-      if (type === 'monthly') {
-        prediction = await MLService.predictNextMonthExpenses(userId);
-      } else if (type === 'category' && req.query.category) {
-        prediction = await MLService.predictCategoryExpense(userId, req.query.category);
-      } else {
-        return res.status(400).json({
-          success: false,
-          error: 'Type de prédiction invalide. Utilisez: monthly ou category'
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          type,
-          prediction,
-          generatedAt: new Date()
-        }
-      });
-
-    } catch (error) {
-      console.error('Erreur getPredictions:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Erreur lors de la prédiction',
+        error: 'Erreur lors de la détection d\'anomalies',
         message: error.message
       });
     }
@@ -275,7 +93,7 @@ class AIController {
 
   /**
    * GET /api/ai/health
-   * Score de santé financière
+   * Score santé financière
    */
   static async getHealthScore(req, res) {
     try {
@@ -337,6 +155,514 @@ class AIController {
   }
 
   /**
+   * GET /api/ai/patterns/temporal
+   * Patterns temporels (heures, jours)
+   */
+  static async getTemporalPatterns(req, res) {
+    try {
+      const { userId } = req.user;
+      const days = parseInt(req.query.days) || 90;
+
+      const patterns = await HabitAnalysisService.analyzeTimingPatterns(userId, days);
+
+      res.json({
+        success: true,
+        data: {
+          hasData: patterns.hasData,
+          patterns: patterns.patterns || {},
+          insights: patterns.insights || [],
+          period: { days },
+          analyzedAt: new Date()
+        }
+      });
+
+    } catch (error) {
+      console.error('Erreur getTemporalPatterns:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'analyse des patterns temporels',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/patterns/location
+   * Patterns de localisation
+   */
+  static async getLocationPatterns(req, res) {
+    try {
+      const { userId } = req.user;
+      const days = parseInt(req.query.days) || 90;
+
+      const patterns = await HabitAnalysisService.analyzeLocationPatterns(userId, days);
+
+      res.json({
+        success: true,
+        data: {
+          hasData: patterns.hasData,
+          patterns: patterns.patterns || [],
+          topLocations: patterns.topLocations || [],
+          period: { days },
+          analyzedAt: new Date()
+        }
+      });
+
+    } catch (error) {
+      console.error('Erreur getLocationPatterns:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'analyse des patterns de localisation',
+        message: error.message
+      });
+    }
+  }
+
+  // ===================================================================
+  // CONSEILS INTELLIGENTS (AdviceEngine)
+  // ===================================================================
+
+  /**
+   * POST /api/ai/advice/generate
+   * Générer conseils complets personnalisés
+   */
+  static async generateAdvice(req, res) {
+    try {
+      const { userId } = req.user;
+      const days = parseInt(req.query.days) || 90;
+
+      const advice = await AdviceEngine.generateComprehensiveAdvice(userId, days);
+
+      res.json({
+        success: true,
+        data: advice
+      });
+
+    } catch (error) {
+      console.error('Erreur generateAdvice:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la génération des conseils',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/advice/optimization-report
+   * Rapport d'optimisation financière complet
+   */
+  static async getOptimizationReport(req, res) {
+    try {
+      const { userId } = req.user;
+
+      const report = await AdviceEngine.generateOptimizationReport(userId);
+
+      res.json({
+        success: true,
+        data: report
+      });
+
+    } catch (error) {
+      console.error('Erreur getOptimizationReport:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la génération du rapport',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/advice/currency-strategy
+   * Stratégie optimisation HTG/USD
+   */
+  static async getCurrencyStrategy(req, res) {
+    try {
+      const { userId } = req.user;
+
+      const strategy = await AdviceEngine.analyzeCurrencyStrategy(userId);
+
+      res.json({
+        success: true,
+        data: strategy
+      });
+
+    } catch (error) {
+      console.error('Erreur getCurrencyStrategy:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'analyse de stratégie devises',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/advice/peer-comparison
+   * Comparaison avec utilisateurs similaires
+   */
+  static async getPeerComparison(req, res) {
+    try {
+      const { userId } = req.user;
+
+      const comparison = await AdviceEngine.generatePeerComparison(userId);
+
+      res.json({
+        success: true,
+        data: comparison
+      });
+
+    } catch (error) {
+      console.error('Erreur getPeerComparison:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la comparaison avec pairs',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/advice/personal
+   * Conseils personnalisés basés sur patterns (simple)
+   */
+  static async getPersonalAdvice(req, res) {
+    try {
+      const { userId } = req.user;
+      const days = parseInt(req.query.days) || 90;
+
+      // Version simplifiée avec moins d'insights
+      const [patterns, health] = await Promise.all([
+        HabitAnalysisService.analyzeSpendingPatterns(userId, days),
+        HabitAnalysisService.calculateFinancialHealth(userId)
+      ]);
+
+      const advice = [];
+
+      // Conseil basé sur catégorie dominante
+      if (patterns.hasData && patterns.categoryBreakdown?.length > 0) {
+        const topCategory = patterns.categoryBreakdown[0];
+        
+        if (topCategory.percentage > 40) {
+          advice.push({
+            type: 'category_optimization',
+            priority: 'high',
+            title: `Optimiser vos dépenses en ${topCategory.name}`,
+            description: `${topCategory.name} représente ${topCategory.percentage}% de vos dépenses (${topCategory.total} HTG). Réduisez de 15% pour économiser ${Math.round(topCategory.total * 0.15)} HTG/mois.`,
+            actions: [
+              `Analyser les dépenses en ${topCategory.name}`,
+              'Identifier les non-essentiels',
+              `Fixer budget de ${Math.round(topCategory.total * 0.85)} HTG`
+            ]
+          });
+        }
+      }
+
+      // Conseil santé financière
+      if (health.score < 50) {
+        advice.push({
+          type: 'health_improvement',
+          priority: 'urgent',
+          title: 'Améliorer votre santé financière',
+          description: `Score actuel: ${health.score}/100 (${health.level}). Actions urgentes nécessaires.`,
+          actions: [
+            'Réduire dépenses non-essentielles de 30%',
+            'Créer budget strict',
+            'Éviter nouvelles dettes'
+          ]
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          advice,
+          totalAdvice: advice.length,
+          basedOn: {
+            spendingPatterns: patterns.hasData,
+            financialHealth: true,
+            period: days
+          },
+          generatedAt: new Date()
+        }
+      });
+
+    } catch (error) {
+      console.error('Erreur getPersonalAdvice:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la génération des conseils',
+        message: error.message
+      });
+    }
+  }
+
+  // ===================================================================
+  // PRÉDICTIONS AVANCÉES (PredictionService)
+  // ===================================================================
+
+  /**
+   * GET /api/ai/predictions/expenses
+   * Prédire dépenses futures
+   */
+  static async predictExpenses(req, res) {
+    try {
+      const { userId } = req.user;
+      const months = parseInt(req.query.months) || 1;
+
+      const predictions = await PredictionService.predictFutureExpenses(userId, months);
+
+      res.json({
+        success: true,
+        data: predictions
+      });
+
+    } catch (error) {
+      console.error('Erreur predictExpenses:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la prédiction des dépenses',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/predictions/income
+   * Prédire revenus futurs
+   */
+  static async predictIncome(req, res) {
+    try {
+      const { userId } = req.user;
+      const months = parseInt(req.query.months) || 3;
+
+      const predictions = await PredictionService.predictFutureIncome(userId, months);
+
+      res.json({
+        success: true,
+        data: predictions
+      });
+
+    } catch (error) {
+      console.error('Erreur predictIncome:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la prédiction des revenus',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/predictions/budget-risks
+   * Analyser risques dépassement budgets
+   */
+  static async predictBudgetRisks(req, res) {
+    try {
+      const { userId } = req.user;
+
+      const risks = await PredictionService.predictBudgetRisks(userId);
+
+      res.json({
+        success: true,
+        data: risks
+      });
+
+    } catch (error) {
+      console.error('Erreur predictBudgetRisks:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'analyse des risques budgets',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/predictions/savings
+   * Calculer capacité d'épargne optimale
+   */
+  static async predictSavings(req, res) {
+    try {
+      const { userId } = req.user;
+
+      const savings = await PredictionService.predictSavingsCapacity(userId);
+
+      res.json({
+        success: true,
+        data: savings
+      });
+
+    } catch (error) {
+      console.error('Erreur predictSavings:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors du calcul de capacité d\'épargne',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * POST /api/ai/predictions/sol-timing
+   * Analyser meilleur moment pour rejoindre sol
+   */
+  static async predictSolTiming(req, res) {
+    try {
+      const { userId } = req.user;
+      const { amount, frequency, participants } = req.body;
+
+      if (!amount || !frequency || !participants) {
+        return res.status(400).json({
+          success: false,
+          error: 'Paramètres manquants: amount, frequency, participants requis'
+        });
+      }
+
+      const timing = await PredictionService.predictOptimalSolTiming(userId, {
+        amount,
+        frequency,
+        participants
+      });
+
+      res.json({
+        success: true,
+        data: timing
+      });
+
+    } catch (error) {
+      console.error('Erreur predictSolTiming:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'analyse du timing sol',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * POST /api/ai/predictions/debt-impact
+   * Analyser impact d'une nouvelle dette
+   */
+  static async predictDebtImpact(req, res) {
+    try {
+      const { userId } = req.user;
+      const { amount, interestRate, duration, monthlyPayment } = req.body;
+
+      if (!amount || !duration || !monthlyPayment) {
+        return res.status(400).json({
+          success: false,
+          error: 'Paramètres manquants: amount, duration, monthlyPayment requis'
+        });
+      }
+
+      const impact = await PredictionService.predictDebtImpact(userId, {
+        amount,
+        interestRate: interestRate || 0,
+        duration,
+        monthlyPayment
+      });
+
+      res.json({
+        success: true,
+        data: impact
+      });
+
+    } catch (error) {
+      console.error('Erreur predictDebtImpact:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de l\'analyse d\'impact dette',
+        message: error.message
+      });
+    }
+  }
+
+  // ===================================================================
+  // MACHINE LEARNING
+  // ===================================================================
+
+  /**
+   * POST /api/ai/classify
+   * Classification automatique transaction
+   */
+  static async classifyTransaction(req, res) {
+    try {
+      const { description, amount, currency } = req.body;
+
+      if (!description || !amount) {
+        return res.status(400).json({
+          success: false,
+          error: 'Description et montant requis'
+        });
+      }
+
+      const classification = await MLService.classifyTransaction(description, amount, currency);
+
+      res.json({
+        success: true,
+        data: {
+          input: { description, amount, currency },
+          result: classification,
+          suggestion: classification.confidence > 0.7 
+            ? `Nous suggérons la catégorie "${classification.category}" avec ${Math.round(classification.confidence * 100)}% de confiance`
+            : 'Classification incertaine, veuillez choisir manuellement'
+        }
+      });
+
+    } catch (error) {
+      console.error('Erreur classifyTransaction:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la classification',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/ai/predictions
+   * Prédictions dépenses (ML Service - méthode existante)
+   */
+  static async getPredictions(req, res) {
+    try {
+      const { userId } = req.user;
+      const type = req.query.type || 'monthly';
+
+      let prediction;
+
+      if (type === 'monthly') {
+        prediction = await MLService.predictNextMonthExpenses(userId);
+      } else if (type === 'category' && req.query.category) {
+        prediction = await MLService.predictCategoryExpense(userId, req.query.category);
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Type de prédiction invalide. Utilisez: monthly ou category'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          type,
+          prediction,
+          generatedAt: new Date()
+        }
+      });
+
+    } catch (error) {
+      console.error('Erreur getPredictions:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erreur lors de la prédiction',
+        message: error.message
+      });
+    }
+  }
+
+  /**
    * POST /api/ai/anomaly/check
    * Vérifier si un montant est anormal
    */
@@ -386,13 +712,7 @@ class AIController {
 
       res.json({
         success: true,
-        data: {
-          cluster: similar.cluster,
-          clusterSize: similar.clusterSize,
-          similarUsers: similar.similarUsers || [],
-          recommendations: similar.recommendations || [],
-          analyzedAt: new Date()
-        }
+        data: similar
       });
 
     } catch (error) {
@@ -406,66 +726,41 @@ class AIController {
   }
 
   /**
-   * GET /api/ai/patterns/temporal
-   * Patterns temporels (heures, jours)
+   * POST /api/ai/models/train
+   * Entraîner modèle ML personnalisé
    */
-  static async getTemporalPatterns(req, res) {
+  static async trainModel(req, res) {
     try {
       const { userId } = req.user;
-      const days = parseInt(req.query.days) || 90;
+      const { modelType } = req.body;
 
-      const patterns = await MLService.analyzeTemporalPatterns(userId);
+      if (!modelType) {
+        return res.status(400).json({
+          success: false,
+          error: 'Type de modèle requis (ex: spending_prediction)'
+        });
+      }
+
+      const model = await PredictionService.trainPredictionModel(userId, modelType);
 
       res.json({
         success: true,
-        data: {
-          patterns: patterns.patterns,
-          period: { days },
-          analyzedAt: new Date()
-        }
+        data: model
       });
 
     } catch (error) {
-      console.error('Erreur getTemporalPatterns:', error);
+      console.error('Erreur trainModel:', error);
       res.status(500).json({
         success: false,
-        error: 'Erreur lors de l\'analyse des patterns temporels',
+        error: 'Erreur lors de l\'entraînement du modèle',
         message: error.message
       });
     }
   }
 
-  /**
-   * GET /api/ai/patterns/location
-   * Patterns de localisation
-   */
-  static async getLocationPatterns(req, res) {
-    try {
-      const { userId } = req.user;
-      const days = parseInt(req.query.days) || 90;
-
-      const patterns = await HabitAnalysisService.analyzeLocationPatterns(userId, days);
-
-      res.json({
-        success: true,
-        data: {
-          hasData: patterns.hasData,
-          patterns: patterns.patterns || [],
-          topLocations: patterns.topLocations || [],
-          period: { days },
-          analyzedAt: new Date()
-        }
-      });
-
-    } catch (error) {
-      console.error('Erreur getLocationPatterns:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Erreur lors de l\'analyse des patterns de localisation',
-        message: error.message
-      });
-    }
-  }
+  // ===================================================================
+  // SYSTÈME
+  // ===================================================================
 
   /**
    * GET /api/ai/status
@@ -477,23 +772,51 @@ class AIController {
         success: true,
         data: {
           status: 'operational',
-          version: '1.0.0',
+          version: '2.0.0',
           services: {
             habitAnalysis: 'active',
             mlService: 'active',
-            classification: 'active',
-            predictions: 'active'
+            adviceEngine: 'active',
+            predictionService: 'active'
           },
-          features: [
-            'Analyse patterns dépenses',
-            'Détection anomalies',
-            'Classification automatique',
-            'Prédictions ML',
-            'Score santé financière',
-            'Identification habitudes',
-            'Clustering users',
-            'Patterns temporels'
-          ],
+          features: {
+            analysis: [
+              'Analyse patterns dépenses',
+              'Détection anomalies',
+              'Score santé financière',
+              'Identification habitudes',
+              'Patterns temporels',
+              'Patterns localisation'
+            ],
+            advice: [
+              'Conseils personnalisés complets',
+              'Rapport d\'optimisation',
+              'Stratégie multi-devises HTG/USD',
+              'Comparaison avec pairs'
+            ],
+            predictions: [
+              'Prédictions dépenses futures',
+              'Prévisions revenus',
+              'Risques budgets',
+              'Capacité épargne',
+              'Timing sols optimal',
+              'Impact dettes'
+            ],
+            ml: [
+              'Classification automatique',
+              'Clustering utilisateurs',
+              'Entraînement modèles personnalisés',
+              'Détection anomalies ML'
+            ]
+          },
+          endpoints: {
+            total: 25,
+            analysis: 6,
+            advice: 4,
+            predictions: 6,
+            ml: 5,
+            system: 1
+          },
           timestamp: new Date()
         }
       });
