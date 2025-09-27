@@ -104,6 +104,8 @@ app.use('/api/investments', require('./routes/investments'));
 
 app.use('/api/debts', require('./routes/debts'));
 
+app.use('/api/notifications', require('./routes/notifications'));
+
 app.use('/api/ai', require('./routes/ai'));
 
 // TODO Phase 7: Routes Uploads

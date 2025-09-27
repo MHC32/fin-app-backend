@@ -25,6 +25,7 @@ pnpm-lock.yaml
 .env.production
 .env.staging
 .env.test
+.CLAUDE.md
 
 # Configuration secrets
 config/secrets.js
