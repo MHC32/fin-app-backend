@@ -8,6 +8,7 @@ const Account = require('../models/Account');
 const Transaction = require('../models/Transaction');
 const { body, validationResult, param, query } = require('express-validator');
 const mongoose = require('mongoose');
+const solNotifications = require('../integrations/solNotifications');
 
 class SolController {
 
@@ -19,11 +20,11 @@ class SolController {
     try {
       // Gérer les cas où id1 ou id2 pourraient être null/undefined
       if (!id1 || !id2) return false;
-      
+
       // Convertir en string quel que soit le type (ObjectId, string, etc.)
       const str1 = id1.toString ? id1.toString() : String(id1);
       const str2 = id2.toString ? id2.toString() : String(id2);
-      
+
       return str1 === str2;
     } catch (error) {
       console.error('❌ Erreur comparaison IDs:', error);
@@ -104,6 +105,8 @@ class SolController {
         { path: 'participants.user', select: 'firstName lastName' }
       ]);
 
+      await solNotifications.notifySolCreated(req.user.userId, newSol);
+      console.log(`✅ Notification création sol envoyée`);
       await this.collectCreationAnalytics(req.user.userId, newSol);
 
       res.status(201).json({
@@ -222,7 +225,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur récupération sols utilisateur:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la récupération des sols',
@@ -262,7 +265,7 @@ class SolController {
 
       // CORRECTION : Utilisation de la fonction de comparaison
       const hasAccess = this.compareUserIds(sol.creator._id, req.user.userId) ||
-        sol.participants.some(p => 
+        sol.participants.some(p =>
           p.user && this.compareUserIds(p.user._id, req.user.userId)
         );
 
@@ -280,7 +283,7 @@ class SolController {
 
       const enrichedSol = {
         ...sol.toJSON(),
-        userRole: this.compareUserIds(sol.creator._id, req.user.userId) ? 
+        userRole: this.compareUserIds(sol.creator._id, req.user.userId) ?
           'creator' : 'participant',
         progress: {
           completedRounds: completedRounds,
@@ -319,7 +322,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur récupération sol:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la récupération du sol',
@@ -328,7 +331,7 @@ class SolController {
       });
     }
     console.log("sol.creator._id:", sol.creator._id)
-   console.log("req.user.userId:", req.user.userId)
+    console.log("req.user.userId:", req.user.userId)
   };
 
   // ===================================================================
@@ -347,14 +350,14 @@ class SolController {
       }
 
       const { accessCode } = req.body;
-      
+
       // CORRECTION : Utiliser findOne au lieu de méthode statique inexistante
-      const sol = await Sol.findOne({ 
-        accessCode: accessCode.toUpperCase(), 
-        status: 'recruiting' 
+      const sol = await Sol.findOne({
+        accessCode: accessCode.toUpperCase(),
+        status: 'recruiting'
       })
-      .populate('participants.user', 'firstName lastName')
-      .populate('creator', 'firstName lastName');
+        .populate('participants.user', 'firstName lastName')
+        .populate('creator', 'firstName lastName');
 
       if (!sol) {
         return res.status(404).json({
@@ -381,7 +384,7 @@ class SolController {
       }
 
       // CORRECTION : Utilisation de la fonction de comparaison
-      const alreadyMember = sol.participants.some(p => 
+      const alreadyMember = sol.participants.some(p =>
         this.compareUserIds(p.user._id, req.user.userId)
       );
 
@@ -394,7 +397,7 @@ class SolController {
       }
 
       const newPosition = sol.participants.length + 1;
-      
+
       // CORRECTION : Vérification de sécurité
       if (newPosition > sol.maxParticipants) {
         return res.status(400).json({
@@ -424,6 +427,9 @@ class SolController {
         sol.actualStartDate = new Date();
         await this.schedulePaymentNotifications(sol);
       }
+
+      await solNotifications.notifySolStarted(sol);
+      console.log(`✅ Notifications démarrage sol envoyées`);
 
       sol.lastActivityDate = new Date();
       await sol.save();
@@ -464,7 +470,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur rejoindre sol:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors de l\'adhésion au sol',
@@ -587,7 +593,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur quitter sol:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la sortie du sol',
@@ -627,7 +633,7 @@ class SolController {
 
       // CORRECTION : Utilisation de la fonction de comparaison
       const hasAccess = this.compareUserIds(sol.creator._id, req.user.userId) ||
-        sol.participants.some(p => 
+        sol.participants.some(p =>
           p.user && this.compareUserIds(p.user._id, req.user.userId)
         );
 
@@ -640,7 +646,7 @@ class SolController {
       }
 
       // CORRECTION : Recherche participant sécurisée
-      const participant = sol.participants.find(p => 
+      const participant = sol.participants.find(p =>
         p.user && this.compareUserIds(p.user._id, req.user.userId)
       );
 
@@ -820,7 +826,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur paiement sol:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors du paiement',
@@ -913,7 +919,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur analytics sols:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors du calcul des analytics',
@@ -995,7 +1001,7 @@ class SolController {
     } catch (error) {
       console.error('❌ Erreur découverte sols:', error.message);
       console.error('Stack trace:', error.stack);
-      
+
       res.status(500).json({
         success: false,
         message: 'Erreur lors de la découverte de sols',

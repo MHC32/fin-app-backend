@@ -6,7 +6,7 @@ const HabitAnalysisService = require('../services/habitAnalysisService');
 const MLService = require('../services/mlService');
 const AdviceEngine = require('../services/adviceEngine');
 const PredictionService = require('../services/predictionService');
-const aiNotifications = require('../integrations/aiNotifications')
+const aiNotifications = require('../integrations/aiNotifications'); // ✅ Intégration ajoutée
 
 class AIController {
 
@@ -17,6 +17,7 @@ class AIController {
   /**
    * GET /api/ai/analysis/personal
    * Analyse complète personnelle de l'utilisateur
+   * ✨ AVEC NOTIFICATIONS AUTOMATIQUES
    */
   static async getPersonalAnalysis(req, res) {
     try {
@@ -32,6 +33,14 @@ class AIController {
         HabitAnalysisService.analyzeTimingPatterns(userId, days)
       ]);
 
+      // ✨ NOUVEAU : Créer notifications pour insights importants
+      const notifResult = await aiNotifications.notifyAIInsights(userId, {
+        insights: habits.habits || [],
+        analysisType: 'personal_analysis'
+      });
+
+      console.log(`✅ ${notifResult.created} notifications AI créées`);
+
       res.json({
         success: true,
         data: {
@@ -46,7 +55,8 @@ class AIController {
           period: {
             days,
             analyzedAt: new Date()
-          }
+          },
+          notificationsCreated: notifResult.created // ✨ Ajouté
         }
       });
 
@@ -63,6 +73,7 @@ class AIController {
   /**
    * GET /api/ai/anomalies
    * Détection anomalies dans dépenses
+   * ✨ AVEC NOTIFICATIONS AUTOMATIQUES
    */
   static async getAnomalies(req, res) {
     try {
@@ -70,6 +81,19 @@ class AIController {
       const days = parseInt(req.query.days) || 90;
 
       const anomalies = await HabitAnalysisService.detectAnomalies(userId, days);
+
+      // ✨ NOUVEAU : Notifier les anomalies critiques
+      if (anomalies.anomalies && anomalies.anomalies.length > 0) {
+        const criticalAnomalies = anomalies.anomalies.filter(a => 
+          a.severity === 'critical' || a.severity === 'high'
+        );
+
+        for (const anomaly of criticalAnomalies) {
+          await aiNotifications.notifyAnomaly(userId, anomaly);
+        }
+        
+        console.log(`✅ ${criticalAnomalies.length} anomalies critiques notifiées`);
+      }
 
       res.json({
         success: true,
@@ -126,6 +150,7 @@ class AIController {
   /**
    * GET /api/ai/habits
    * Habitudes financières détectées
+   * ✨ AVEC NOTIFICATIONS AUTOMATIQUES
    */
   static async getHabits(req, res) {
     try {
@@ -133,6 +158,16 @@ class AIController {
       const days = parseInt(req.query.days) || 90;
 
       const habits = await HabitAnalysisService.identifyHabits(userId, days);
+
+      // ✨ NOUVEAU : Créer notifications pour habitudes importantes
+      if (habits.habits && habits.habits.length > 0) {
+        const notifResult = await aiNotifications.notifyAIInsights(userId, {
+          insights: habits.habits,
+          analysisType: 'habit_analysis'
+        });
+
+        console.log(`✅ ${notifResult.created} notifications habitudes créées`);
+      }
 
       res.json({
         success: true,
@@ -226,6 +261,7 @@ class AIController {
   /**
    * POST /api/ai/advice/generate
    * Générer conseils complets personnalisés
+   * ✨ AVEC NOTIFICATIONS AUTOMATIQUES
    */
   static async generateAdvice(req, res) {
     try {
@@ -233,6 +269,16 @@ class AIController {
       const days = parseInt(req.query.days) || 90;
 
       const advice = await AdviceEngine.generateComprehensiveAdvice(userId, days);
+
+      // ✨ NOUVEAU : Notifier les recommandations importantes
+      if (advice.recommendations && advice.recommendations.length > 0) {
+        const notifResult = await aiNotifications.notifyRecommendations(
+          userId,
+          advice.recommendations
+        );
+
+        console.log(`✅ ${notifResult.created} recommandations notifiées`);
+      }
 
       res.json({
         success: true,
@@ -458,12 +504,31 @@ class AIController {
   /**
    * GET /api/ai/predictions/budget-risks
    * Analyser risques dépassement budgets
+   * ✨ AVEC NOTIFICATIONS AUTOMATIQUES
    */
   static async predictBudgetRisks(req, res) {
     try {
       const { userId } = req.user;
 
       const risks = await PredictionService.predictBudgetRisks(userId);
+
+      // ✨ NOUVEAU : Notifier les risques de budget élevés
+      if (risks.budgets && risks.budgets.length > 0) {
+        const highRiskBudgets = risks.budgets.filter(b => 
+          b.riskLevel === 'high' || b.riskLevel === 'critical'
+        );
+
+        for (const budget of highRiskBudgets) {
+          await aiNotifications.notifyBudgetPrediction(userId, {
+            predictedPercentage: budget.predictedPercentage,
+            confidence: budget.confidence,
+            timeframe: '30 jours',
+            budgetName: budget.name
+          });
+        }
+
+        console.log(`✅ ${highRiskBudgets.length} risques budget notifiés`);
+      }
 
       res.json({
         success: true,
@@ -778,7 +843,8 @@ class AIController {
             habitAnalysis: 'active',
             mlService: 'active',
             adviceEngine: 'active',
-            predictionService: 'active'
+            predictionService: 'active',
+            notifications: 'active' // ✨ Ajouté
           },
           features: {
             analysis: [
@@ -808,10 +874,16 @@ class AIController {
               'Clustering utilisateurs',
               'Entraînement modèles personnalisés',
               'Détection anomalies ML'
+            ],
+            notifications: [ // ✨ Ajouté
+              'Notifications insights automatiques',
+              'Alertes anomalies',
+              'Recommandations personnalisées',
+              'Prédictions budget'
             ]
           },
           endpoints: {
-            total: 25,
+            total: 27, // Mis à jour
             analysis: 6,
             advice: 4,
             predictions: 6,
@@ -831,33 +903,5 @@ class AIController {
     }
   }
 }
-
-exports.analyzeHabits = async (req, res) => {
-  try {
-    // 1. Faire l'analyse IA
-    const analysis = await habitAnalysisService.analyzeUserHabits(req.user.id);
-    
-    // 2. ✨ NOUVEAU : Créer notifications automatiques
-    const notifResult = await aiNotifications.notifyAIInsights(
-      req.user.id,
-      {
-        insights: analysis.insights,
-        analysisType: 'habit_analysis'
-      }
-    );
-    
-    console.log(`✅ ${notifResult.created} notifications créées`);
-    
-    // 3. Retourner résultat
-    res.json({
-      success: true,
-      analysis: analysis,
-      notificationsCreated: notifResult.created
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
 
 module.exports = AIController;

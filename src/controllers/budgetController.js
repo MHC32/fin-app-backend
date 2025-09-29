@@ -1,12 +1,13 @@
 // src/controllers/budgetController.js - Controller budgets FinApp Haiti
 const Budget = require('../models/Budget');
 const Transaction = require('../models/Transaction');
+const budgetNotifications = require('../integrations/budgetNotifications'); // ✨ INTÉGRATION
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 
 /**
  * Controller pour la gestion des budgets
- * Inspiration de transactionController.js avec logique budgets
+ * ✨ AVEC NOTIFICATIONS AUTOMATIQUES INTÉGRÉES
  */
 class BudgetController {
 
@@ -17,6 +18,7 @@ class BudgetController {
   /**
    * Créer un nouveau budget
    * POST /api/budgets
+   * ✨ AVEC NOTIFICATION CRÉATION
    */
   static async createBudget(req, res) {
     try {
@@ -60,6 +62,10 @@ class BudgetController {
       const budget = new Budget(budgetData);
       await budget.save();
 
+      // ✨ NOUVEAU : Notifier création budget
+      await budgetNotifications.notifyBudgetCreated(req.user.userId, budget);
+      console.log(`✅ Notification création budget envoyée`);
+
       res.status(201).json({
         success: true,
         message: 'Budget créé avec succès',
@@ -79,6 +85,7 @@ class BudgetController {
   /**
    * Créer budget depuis template
    * POST /api/budgets/from-template
+   * ✨ AVEC NOTIFICATION CRÉATION
    */
   static async createFromTemplate(req, res) {
     try {
@@ -96,6 +103,10 @@ class BudgetController {
         templateName,
         customData
       );
+
+      // ✨ NOUVEAU : Notifier création budget
+      await budgetNotifications.notifyBudgetCreated(req.user.userId, budget);
+      console.log(`✅ Notification création budget template envoyée`);
 
       res.status(201).json({
         success: true,
@@ -267,6 +278,7 @@ class BudgetController {
   /**
    * Modifier un budget
    * PUT /api/budgets/:id
+   * ✨ AVEC VÉRIFICATION ALERTES
    */
   static async updateBudget(req, res) {
     try {
@@ -313,6 +325,10 @@ class BudgetController {
       });
 
       await budget.save();
+
+      // ✨ NOUVEAU : Vérifier si notification nécessaire après modification
+      await budgetNotifications.notifyBudgetAlert(req.user.userId, budget);
+      console.log(`✅ Vérification alertes budget effectuée`);
 
       res.json({
         success: true,
@@ -405,6 +421,7 @@ class BudgetController {
   /**
    * Ajuster budget d'une catégorie
    * PUT /api/budgets/:id/adjust-category
+   * ✨ AVEC VÉRIFICATION ALERTES
    */
   static async adjustCategoryBudget(req, res) {
     try {
@@ -432,6 +449,10 @@ class BudgetController {
 
       await budget.adjustCategoryBudget(category, newAmount, reason);
 
+      // ✨ NOUVEAU : Vérifier alertes après ajustement
+      await budgetNotifications.notifyBudgetAlert(req.user.userId, budget);
+      console.log(`✅ Vérification alertes après ajustement`);
+
       res.json({
         success: true,
         message: `Budget ${category} ajusté à ${newAmount}`,
@@ -458,6 +479,7 @@ class BudgetController {
   /**
    * Créer snapshot mensuel
    * POST /api/budgets/:id/snapshot
+   * ✨ AVEC NOTIFICATION FÉLICITATIONS SI SUCCÈS
    */
   static async createSnapshot(req, res) {
     try {
@@ -476,6 +498,13 @@ class BudgetController {
       }
 
       await budget.createMonthlySnapshot();
+
+      // ✨ NOUVEAU : Si budget respecté, féliciter l'utilisateur
+      const percentage = (budget.totalSpent / budget.totalBudgeted) * 100;
+      if (percentage <= 100) {
+        await budgetNotifications.notifyBudgetCompleted(req.user.userId, budget);
+        console.log(`✅ Notification félicitations budget envoyée`);
+      }
 
       res.json({
         success: true,
@@ -700,10 +729,18 @@ class BudgetController {
   /**
    * Budgets nécessitant attention
    * GET /api/budgets/alerts
+   * ✨ AVEC VÉRIFICATION NOTIFICATIONS AUTOMATIQUES
    */
   static async getBudgetAlerts(req, res) {
     try {
       const budgets = await Budget.findNeedingAttention(req.user.userId);
+
+      // ✨ NOUVEAU : Créer notifications pour tous les budgets problématiques
+      const notifResult = await budgetNotifications.notifyBudgetsStatus(
+        req.user.userId,
+        budgets
+      );
+      console.log(`✅ ${notifResult.created} notifications budgets créées`);
 
       const alerts = [];
 
@@ -756,7 +793,8 @@ class BudgetController {
             critical: alerts.filter(a => a.type === 'critical').length,
             warning: alerts.filter(a => a.type === 'warning').length,
             info: alerts.filter(a => a.type === 'info').length
-          }
+          },
+          notifications_created: notifResult.created // ✨ Ajouté
         }
       });
 
