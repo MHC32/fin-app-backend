@@ -1032,6 +1032,10 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
+// Routes admin/cron uniquement
+router.post('/check-late-payments', SolController.checkAndNotifyLatePayments);
+router.post('/notify-upcoming-turns', SolController.notifyUpcomingTurns);
+
 /**
  * Middleware de gestion d'erreurs spécifique aux sols
  * Gère les erreurs spécifiques aux opérations de sols/tontines

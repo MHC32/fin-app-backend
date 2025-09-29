@@ -1,6 +1,6 @@
 // src/controllers/solController.js
 // Controller pour gestion sols/tontines - FinApp Haiti
-// Version complète corrigée avec toutes les corrections
+// Version complète avec intégrations notifications
 
 const Sol = require('../models/Sol');
 const User = require('../models/User');
@@ -8,7 +8,7 @@ const Account = require('../models/Account');
 const Transaction = require('../models/Transaction');
 const { body, validationResult, param, query } = require('express-validator');
 const mongoose = require('mongoose');
-const solNotifications = require('../integrations/solNotifications');
+const solNotifications = require('../integrations/solNotifications'); // ✨ INTÉGRATION
 
 class SolController {
 
@@ -105,8 +105,10 @@ class SolController {
         { path: 'participants.user', select: 'firstName lastName' }
       ]);
 
+      // ✨ NOUVEAU : Notifier création sol
       await solNotifications.notifySolCreated(req.user.userId, newSol);
       console.log(`✅ Notification création sol envoyée`);
+
       await this.collectCreationAnalytics(req.user.userId, newSol);
 
       res.status(201).json({
@@ -330,8 +332,6 @@ class SolController {
         details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
-    console.log("sol.creator._id:", sol.creator._id)
-    console.log("req.user.userId:", req.user.userId)
   };
 
   // ===================================================================
@@ -426,10 +426,23 @@ class SolController {
         sol.status = 'active';
         sol.actualStartDate = new Date();
         await this.schedulePaymentNotifications(sol);
+        
+        // ✨ NOUVEAU : Notifier démarrage sol
+        await solNotifications.notifySolStarted(sol);
+        console.log(`✅ Notifications démarrage sol envoyées`);
+      } else {
+        // ✨ NOUVEAU : Notifier nouveau participant
+        const newParticipant = sol.participants[sol.participants.length - 1];
+        await sol.populate('participants.user', 'firstName lastName');
+        
+        const participantData = {
+          user: newParticipant.user._id || req.user.userId,
+          name: newParticipant.user.firstName + ' ' + newParticipant.user.lastName
+        };
+        
+        await solNotifications.notifyParticipantJoined(sol, participantData);
+        console.log(`✅ Notifications nouveau participant envoyées`);
       }
-
-      await solNotifications.notifySolStarted(sol);
-      console.log(`✅ Notifications démarrage sol envoyées`);
 
       sol.lastActivityDate = new Date();
       await sol.save();
@@ -767,6 +780,18 @@ class SolController {
           const totalAmount = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
           await this.transferToRecipient(sol, targetRound, totalAmount, session);
 
+          // ✨ NOUVEAU : Notifier bénéficiaire - paiements complets
+          await solNotifications.notifyPaymentReceived(targetRound.recipient, {
+            solId: sol._id,
+            solName: sol.name,
+            amount: totalAmount,
+            payerName: 'Tous les participants',
+            turnNumber: targetRound.roundNumber,
+            totalReceived: totalAmount,
+            totalExpected: totalAmount
+          });
+          console.log(`✅ Notification paiement complet envoyée au bénéficiaire`);
+
           // Activer le round suivant ou terminer le sol
           const nextRoundIndex = sol.rounds.indexOf(targetRound) + 1;
           if (sol.rounds[nextRoundIndex]) {
@@ -775,7 +800,30 @@ class SolController {
           } else {
             sol.status = 'completed';
             sol.completedDate = new Date();
+            
+            // ✨ NOUVEAU : Notifier sol complété
+            await solNotifications.notifySolCompleted(sol);
+            console.log(`✅ Notifications sol complété envoyées`);
           }
+        } else {
+          // ✨ NOUVEAU : Notifier bénéficiaire - paiement partiel
+          const payer = sol.participants.find(p => 
+            this.compareUserIds(p.user, req.user.userId)
+          );
+          
+          const totalReceived = targetRound.payments.reduce((sum, p) => sum + p.amount, 0);
+          const totalExpected = sol.contributionAmount * sol.participants.length;
+          
+          await solNotifications.notifyPaymentReceived(targetRound.recipient, {
+            solId: sol._id,
+            solName: sol.name,
+            amount: amount,
+            payerName: payer.user.firstName + ' ' + payer.user.lastName,
+            turnNumber: targetRound.roundNumber,
+            totalReceived: totalReceived,
+            totalExpected: totalExpected
+          });
+          console.log(`✅ Notification paiement partiel envoyée`);
         }
 
         // Mettre à jour les métriques du sol
@@ -1007,6 +1055,147 @@ class SolController {
         message: 'Erreur lors de la découverte de sols',
         error: 'sol_discovery_error',
         details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  };
+
+  // ===================================================================
+  // 6. NOUVELLES MÉTHODES POUR NOTIFICATIONS AUTOMATIQUES
+  // ===================================================================
+
+  /**
+   * Vérifier et notifier les paiements en retard
+   * À appeler depuis un cron job quotidien
+   * POST /api/sols/check-late-payments (admin/cron only)
+   */
+  static checkAndNotifyLatePayments = async (req, res) => {
+    try {
+      const now = new Date();
+      
+      // Trouver tous les sols actifs avec rounds actifs
+      const activeSols = await Sol.find({
+        status: 'active'
+      }).populate('participants.user', 'firstName lastName');
+
+      let notificationsCreated = 0;
+
+      for (const sol of activeSols) {
+        const activeRound = sol.rounds.find(r => r.status === 'active');
+        
+        if (!activeRound) continue;
+
+        // Vérifier si la date d'échéance est dépassée
+        if (new Date(activeRound.endDate) < now) {
+          // Trouver participants qui n'ont pas payé
+          for (const participant of sol.participants) {
+            const hasPaid = activeRound.payments.some(p =>
+              this.compareUserIds(p.payer, participant.user._id)
+            );
+
+            if (!hasPaid) {
+              const daysLate = Math.ceil((now - new Date(activeRound.endDate)) / (1000 * 60 * 60 * 24));
+              
+              // ✨ NOUVEAU : Notifier retard
+              await solNotifications.notifyLatePayment(participant.user._id, {
+                solId: sol._id,
+                solName: sol.name,
+                amount: sol.contributionAmount,
+                daysLate: daysLate,
+                beneficiaryName: activeRound.recipient.firstName + ' ' + activeRound.recipient.lastName,
+                turnNumber: activeRound.roundNumber
+              });
+              
+              notificationsCreated++;
+            }
+          }
+        }
+      }
+
+      console.log(`✅ ${notificationsCreated} notifications retard créées`);
+
+      res.json({
+        success: true,
+        message: 'Vérification paiements en retard terminée',
+        data: {
+          solsChecked: activeSols.length,
+          notificationsCreated: notificationsCreated
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur vérification paiements en retard:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Erreur lors de la vérification',
+        error: error.message
+      });
+    }
+  };
+
+  /**
+   * Notifier les tours de sol à venir
+   * À appeler depuis un cron job quotidien
+   * POST /api/sols/notify-upcoming-turns (admin/cron only)
+   */
+  static notifyUpcomingTurns = async (req, res) => {
+    try {
+      const now = new Date();
+      
+      // Trouver tous les sols actifs
+      const activeSols = await Sol.find({
+        status: 'active'
+      }).populate('participants.user', 'firstName lastName')
+        .populate('rounds.recipient', 'firstName lastName');
+
+      let notificationsCreated = 0;
+
+      for (const sol of activeSols) {
+        // Trouver le prochain round (pending ou active)
+        const nextRound = sol.rounds.find(r => 
+          r.status === 'pending' || r.status === 'active'
+        );
+        
+        if (!nextRound || !nextRound.startDate) continue;
+
+        // Calculer jours restants
+        const daysUntil = Math.ceil((new Date(nextRound.startDate) - now) / (1000 * 60 * 60 * 24));
+
+        // Vérifier si on doit envoyer un rappel
+        const shouldNotify = 
+          daysUntil === 7 ||  // 1 semaine avant
+          daysUntil === 3 ||  // 3 jours avant
+          daysUntil === 1 ||  // 1 jour avant
+          daysUntil === 0;    // Le jour même
+
+        if (shouldNotify) {
+          // ✨ NOUVEAU : Créer rappels tour de sol
+          const result = await solNotifications.notifySolTurnReminder(
+            sol,
+            nextRound,
+            daysUntil
+          );
+          
+          notificationsCreated += result.created;
+        }
+      }
+
+      console.log(`✅ ${notificationsCreated} notifications tour créées`);
+
+      res.json({
+        success: true,
+        message: 'Rappels tours de sol envoyés',
+        data: {
+          solsChecked: activeSols.length,
+          notificationsCreated: notificationsCreated
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur notification tours:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Erreur lors de l\'envoi des rappels',
+        error: error.message
       });
     }
   };
@@ -1764,6 +1953,18 @@ SolController.validatePayment = [
     .trim()
     .isLength({ max: 200 })
     .withMessage('Notes trop longues (max 200 caractères)')
+];
+
+// ============================================================================
+// VALIDATIONS POUR LES NOUVELLES ROUTES
+// ============================================================================
+
+SolController.validateCheckLatePayments = [
+  // Admin only - pas de validation spécifique
+];
+
+SolController.validateNotifyUpcomingTurns = [
+  // Admin only - pas de validation spécifique
 ];
 
 module.exports = SolController;
