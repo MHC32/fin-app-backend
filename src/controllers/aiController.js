@@ -6,6 +6,7 @@ const HabitAnalysisService = require('../services/habitAnalysisService');
 const MLService = require('../services/mlService');
 const AdviceEngine = require('../services/adviceEngine');
 const PredictionService = require('../services/predictionService');
+const aiNotifications = require('../integrations/aiNotifications')
 
 class AIController {
 
@@ -830,5 +831,33 @@ class AIController {
     }
   }
 }
+
+exports.analyzeHabits = async (req, res) => {
+  try {
+    // 1. Faire l'analyse IA
+    const analysis = await habitAnalysisService.analyzeUserHabits(req.user.id);
+    
+    // 2. ✨ NOUVEAU : Créer notifications automatiques
+    const notifResult = await aiNotifications.notifyAIInsights(
+      req.user.id,
+      {
+        insights: analysis.insights,
+        analysisType: 'habit_analysis'
+      }
+    );
+    
+    console.log(`✅ ${notifResult.created} notifications créées`);
+    
+    // 3. Retourner résultat
+    res.json({
+      success: true,
+      analysis: analysis,
+      notificationsCreated: notifResult.created
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
 
 module.exports = AIController;
