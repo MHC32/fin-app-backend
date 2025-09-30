@@ -15,6 +15,9 @@ const {
   strictAuthLimiter
 } = require('../middleware/auth');
 
+// ✅ NOUVEAU : Import validation centralisée
+const { validate } = require('../middleware/validation');
+
 const router = express.Router();
 
 /**
@@ -23,11 +26,12 @@ const router = express.Router();
  * Structure :
  * - Routes publiques (pas d'auth) : register, login, refresh, forgot-password, reset-password
  * - Routes protégées (auth requis) : logout, logout-all, change-password, sessions, cleanup
- * - Health check : service status
+ * - Routes admin (admin requis) : users-sessions
+ * - Utilitaires : health, me, verify-token
  * 
  * Sécurité :
  * - Rate limiting adapté par endpoint
- * - Validation express-validator dans controllers
+ * - Validation Joi centralisée (validation.js) ✅
  * - Middleware auth pour protection routes
  */
 
@@ -49,10 +53,7 @@ const authAttemptLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    // Rate limit par IP pour register/login
-    return req.ip;
-  }
+  keyGenerator: (req) => req.ip
 });
 
 /**
@@ -92,31 +93,10 @@ const refreshTokenLimiter = rateLimit({
  * @route   POST /api/auth/register
  * @desc    Enregistrer un nouvel utilisateur
  * @access  Public
- * @rateLimit 10 tentatives / 15 minutes par IP
- * 
- * Body: {
- *   firstName: string,
- *   lastName: string, 
- *   email: string,
- *   password: string,
- *   phone?: string,
- *   region: string,
- *   city: string,
- *   agreeToTerms: boolean
- * }
- * 
- * Response: {
- *   success: true,
- *   message: string,
- *   data: {
- *     user: UserObject,
- *     tokens: { accessToken, tokenType, expiresIn },
- *     session: { sessionId, deviceId }
- *   }
- * }
  */
 router.post('/register', 
   authAttemptLimiter,
+  validate('auth', 'register'), // ✅ Validation centralisée
   authController.register
 );
 
@@ -124,26 +104,10 @@ router.post('/register',
  * @route   POST /api/auth/login
  * @desc    Connexion utilisateur
  * @access  Public
- * @rateLimit 10 tentatives / 15 minutes par IP
- * 
- * Body: {
- *   identifier: string, // email ou téléphone
- *   password: string,
- *   rememberMe?: boolean
- * }
- * 
- * Response: {
- *   success: true,
- *   message: string,
- *   data: {
- *     user: UserObject,
- *     tokens: { accessToken, tokenType, expiresIn },
- *     session: { sessionId, deviceId, deviceInfo }
- *   }
- * }
  */
 router.post('/login', 
   authAttemptLimiter,
+  validate('auth', 'login'), // ✅ Validation centralisée
   authController.login
 );
 
@@ -151,23 +115,10 @@ router.post('/login',
  * @route   POST /api/auth/refresh
  * @desc    Renouveler access token avec refresh token
  * @access  Public
- * @rateLimit 20 tentatives / 5 minutes par IP
- * 
- * Body: {
- *   refreshToken: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: string,
- *   data: {
- *     tokens: { accessToken, tokenType, expiresIn },
- *     session: { sessionId, deviceId }
- *   }
- * }
  */
 router.post('/refresh', 
   refreshTokenLimiter,
+  validate('auth', 'refreshToken'), // ✅ Validation centralisée
   authController.refreshToken
 );
 
@@ -175,19 +126,10 @@ router.post('/refresh',
  * @route   POST /api/auth/forgot-password
  * @desc    Demander réinitialisation mot de passe
  * @access  Public
- * @rateLimit 5 tentatives / 1 heure par IP
- * 
- * Body: {
- *   email: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Si cet email existe, un lien de réinitialisation a été envoyé"
- * }
  */
 router.post('/forgot-password', 
   passwordResetLimiter,
+  validate('auth', 'forgotPassword'), // ✅ Validation centralisée
   authController.forgotPassword
 );
 
@@ -195,21 +137,10 @@ router.post('/forgot-password',
  * @route   POST /api/auth/reset-password
  * @desc    Réinitialiser mot de passe avec token
  * @access  Public
- * @rateLimit 5 tentatives / 1 heure par IP
- * 
- * Body: {
- *   resetToken: string,
- *   newPassword: string,
- *   confirmPassword: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Mot de passe réinitialisé avec succès"
- * }
  */
 router.post('/reset-password', 
   passwordResetLimiter,
+  validate('auth', 'resetPassword'), // ✅ Validation centralisée
   authController.resetPassword
 );
 
@@ -220,17 +151,7 @@ router.post('/reset-password',
 /**
  * @route   POST /api/auth/logout
  * @desc    Déconnexion session courante
- * @access  Private (authentification requise)
- * @middleware authenticate + generalAuthLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Déconnexion réussie. À bientôt! 👋"
- * }
+ * @access  Private
  */
 router.post('/logout', 
   authenticate,
@@ -241,17 +162,7 @@ router.post('/logout',
 /**
  * @route   POST /api/auth/logout-all
  * @desc    Déconnexion de toutes les sessions
- * @access  Private (authentification requise)
- * @middleware strictAuth (auth + strict rate limiting + logging)
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Déconnexion de toutes les sessions réussie"
- * }
+ * @access  Private
  */
 router.post('/logout-all', 
   ...strictAuth, // authenticate + strictAuthLimiter + requireVerified + logging
@@ -261,47 +172,18 @@ router.post('/logout-all',
 /**
  * @route   POST /api/auth/change-password
  * @desc    Changer mot de passe (utilisateur connecté)
- * @access  Private (authentification + compte vérifié)
- * @middleware strictAuth (sécurité renforcée pour changement password)
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   currentPassword: string,
- *   newPassword: string,
- *   confirmPassword: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Mot de passe modifié avec succès"
- * }
+ * @access  Private
  */
 router.post('/change-password', 
   ...strictAuth, // Sécurité maximale pour changement password
+  validate('auth', 'changePassword'), // ✅ Validation centralisée
   authController.changePassword
 );
 
 /**
  * @route   GET /api/auth/sessions
  * @desc    Lister sessions actives utilisateur
- * @access  Private (authentification requise)
- * @middleware standardAuth (auth standard + logging + monitoring)
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Sessions récupérées avec succès",
- *   data: {
- *     sessions: [SessionObject],
- *     totalSessions: number
- *   }
- * }
+ * @access  Private
  */
 router.get('/sessions', 
   ...standardAuth, // authenticate + generalAuthLimiter + logging + monitoring
@@ -311,25 +193,33 @@ router.get('/sessions',
 /**
  * @route   DELETE /api/auth/sessions/cleanup
  * @desc    Nettoyer sessions expirées
- * @access  Private (authentification requise)
- * @middleware standardAuth
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "X sessions expirées supprimées",
- *   data: {
- *     sessionsRemoved: number,
- *     activeSessions: number
- *   }
- * }
+ * @access  Private
  */
 router.delete('/sessions/cleanup', 
   ...standardAuth,
   authController.cleanupSessions
+);
+
+/**
+ * @route   GET /api/auth/me
+ * @desc    Obtenir infos utilisateur connecté
+ * @access  Private
+ */
+router.get('/me',
+  authenticate,
+  generalAuthLimiter,
+  authController.getCurrentUser
+);
+
+/**
+ * @route   GET /api/auth/verify-token
+ * @desc    Vérifier validité du token actuel
+ * @access  Private
+ */
+router.get('/verify-token',
+  authenticate,
+  generalAuthLimiter,
+  authController.verifyToken
 );
 
 // ===================================================================
@@ -340,184 +230,29 @@ router.delete('/sessions/cleanup',
  * @route   GET /api/auth/admin/users-sessions
  * @desc    Lister toutes les sessions actives (admin seulement)
  * @access  Private (admin uniquement)
- * @middleware authenticate + requireRole('admin') + strictAuthLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     totalActiveSessions: number,
- *     sessionsByRegion: Array,
- *     deviceStats: Object
- *   }
- * }
  */
 router.get('/admin/users-sessions', 
   authenticate,
   requireRole('admin'),
   strictAuthLimiter,
-  async (req, res) => {
-    try {
-      // TODO: Implémenter dans authController si nécessaire
-      res.status(200).json({
-        success: true,
-        message: 'Fonctionnalité admin en développement',
-        data: {
-          info: 'Statistiques sessions globales à venir'
-        }
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur récupération statistiques',
-        error: error.message
-      });
-    }
-  }
+  authController.getAllUsersSessions
 );
 
 // ===================================================================
-// ROUTES UTILITAIRES & HEALTH CHECK
+// ROUTES UTILITAIRES
 // ===================================================================
 
 /**
  * @route   GET /api/auth/health
- * @desc    Health check service authentification
+ * @desc    Health check du service d'authentification
  * @access  Public
- * 
- * Response: {
- *   success: true,
- *   message: "Service d'authentification opérationnel",
- *   data: {
- *     service: "auth",
- *     version: "1.0.0",
- *     endpoints: Object
- *   }
- * }
  */
 router.get('/health', authController.healthCheck);
-
-/**
- * @route   GET /api/auth/me
- * @desc    Récupérer informations utilisateur connecté
- * @access  Private (authentification requise)
- * @middleware optionalAuth (permet auth optionnelle)
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>" (optionnel)
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     user: UserObject | null,
- *     authenticated: boolean
- *   }
- * }
- */
-router.get('/me', 
-  optionalAuth,
-  (req, res) => {
-    try {
-      res.status(200).json({
-        success: true,
-        data: {
-          user: req.user || null,
-          authenticated: !!req.user,
-          session: req.user ? {
-            sessionId: req.user.sessionId,
-            tokenExpiringSoon: req.user.tokenExpiringSoon
-          } : null
-        },
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur récupération profil utilisateur',
-        error: error.message,
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
-
-/**
- * @route   GET /api/auth/verify-token
- * @desc    Vérifier validité d'un token (pour frontend)
- * @access  Private (authentification requise)
- * @middleware authenticate + generalAuthLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     valid: boolean,
- *     user: UserObject,
- *     tokenExpiringSoon: boolean
- *   }
- * }
- */
-router.get('/verify-token', 
-  authenticate,
-  generalAuthLimiter,
-  (req, res) => {
-    try {
-      res.status(200).json({
-        success: true,
-        message: 'Token valide',
-        data: {
-          valid: true,
-          user: {
-            userId: req.user.userId,
-            email: req.user.email,
-            firstName: req.user.firstName,
-            lastName: req.user.lastName,
-            role: req.user.role,
-            isVerified: req.user.isVerified
-          },
-          session: {
-            sessionId: req.user.sessionId,
-            lastActivity: req.user.lastActivity
-          },
-          tokenExpiringSoon: req.user.tokenExpiringSoon || false
-        },
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur vérification token',
-        error: error.message,
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
-
-// ===================================================================
-// ROUTE INFO ENDPOINTS
-// ===================================================================
 
 /**
  * @route   GET /api/auth
  * @desc    Information sur les endpoints d'authentification disponibles
  * @access  Public
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     service: "authentication",
- *     version: "1.0.0",
- *     endpoints: Object
- *   }
- * }
  */
 router.get('/', (req, res) => {
   res.status(200).json({
@@ -555,14 +290,13 @@ router.get('/', (req, res) => {
         refresh: '20 / 5 minutes',
         passwordReset: '5 / 1 hour',
         general: '1000 / 15 minutes',
-        strict: '50 / 1 hour',
-        admin: '100 / 5 minutes'
+        strict: '50 / 1 hour'
       },
       security: {
         jwt: 'HS256 algorithm',
         sessions: 'Multi-device session tracking',
         rateLimit: 'IP and user-based limiting',
-        validation: 'Express-validator with Haiti context'
+        validation: 'Joi centralized validation' // ✅ Mise à jour
       }
     },
     timestamp: new Date().toISOString()

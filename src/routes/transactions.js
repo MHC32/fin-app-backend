@@ -7,14 +7,12 @@ const transactionController = require('../controllers/transactionController');
 const { 
   authenticate,
   requireRole,
-  requireVerified,
-  standardAuth,
-  strictAuth,
-  adminAuth,
   generalAuthLimiter,
-  strictAuthLimiter,
   adminLimiter
 } = require('../middleware/auth');
+
+// ✅ NOUVEAU : Import validation centralisée
+const { validate, validateObjectId } = require('../middleware/validation');
 
 const router = express.Router();
 
@@ -30,8 +28,8 @@ const router = express.Router();
  * Sécurité :
  * - Authentification obligatoire pour toutes les routes
  * - Rate limiting adapté par type d'opération
+ * - Validation Joi centralisée (validation.js) ✅
  * - Ownership automatique (req.user.userId)
- * - Validation express-validator dans controllers
  */
 
 // ===================================================================
@@ -101,235 +99,68 @@ const searchLimiter = rateLimit({
 });
 
 // ===================================================================
-// DOCUMENTATION API TRANSACTIONS
-// ===================================================================
-
-/**
- * @route   GET /api/transactions
- * @desc    Documentation et informations sur l'API Transactions
- * @access  Public
- */
-router.get('/', (req, res) => {
-  res.json({
-    message: 'API Transactions FinApp Haiti 💰',
-    description: 'Gestion complète des transactions financières haïtiennes',
-    version: '1.0.0',
-    endpoints: {
-      // CRUD Principal
-      'POST /': 'Créer une nouvelle transaction',
-      'GET /list': 'Lister mes transactions',
-      'GET /:transactionId': 'Détails d\'une transaction',
-      'PUT /:transactionId': 'Modifier une transaction',
-      'DELETE /:transactionId': 'Supprimer une transaction',
-      
-      // Analytics & Stats
-      'GET /analytics/categories': 'Analytics par catégorie',
-      'GET /analytics/monthly': 'Statistiques mensuelles',
-      'GET /search': 'Recherche avancée',
-      
-      // Actions spéciales
-      'POST /:transactionId/duplicate': 'Dupliquer transaction',
-      'PUT /:transactionId/confirm': 'Confirmer transaction',
-      'POST /:transactionId/receipt': 'Ajouter reçu',
-      'PUT /:transactionId/location': 'Ajouter localisation',
-      
-      // Utilitaires
-      'GET /suggestions': 'Suggestions basées sur historique',
-      
-      // Admin
-      'GET /admin/stats': 'Statistiques globales (admin)'
-    },
-    rateLimits: {
-      transactionOperations: '100 requêtes / 15 minutes',
-      transactionCreation: '50 créations / heure',
-      analytics: '200 requêtes / heure',
-      search: '60 recherches / 15 minutes'
-    },
-    supportedTypes: ['income', 'expense', 'transfer'],
-    supportedCategories: [
-      'alimentation', 'transport', 'logement', 'sante', 'education',
-      'loisirs', 'shopping', 'services', 'transfert', 'autre'
-    ],
-    authentication: 'Bearer token requis'
-  });
-});
-
-// ===================================================================
 // ROUTES CRUD TRANSACTIONS
 // ===================================================================
 
 /**
  * @route   POST /api/transactions
  * @desc    Créer une nouvelle transaction
- * @access  Private (authentification requise)
- * @middleware authenticate + transactionCreationLimiter + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   amount: number (requis),
- *   type: string (requis) - income|expense|transfer,
- *   description: string (requis),
- *   category: string (requis),
- *   account: string (requis) - ID du compte,
- *   subcategory?: string,
- *   toAccount?: string - ID compte destinataire (requis pour transfer),
- *   date?: string - ISO date,
- *   tags?: string[],
- *   notes?: string,
- *   location?: {
- *     name?: string,
- *     address?: string,
- *     latitude?: number,
- *     longitude?: number
- *   },
- *   templateUsed?: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Transaction créée avec succès",
- *   data: {
- *     transaction: TransactionObject
- *   }
- * }
+ * @access  Private
  */
 router.post('/',
   authenticate,
   transactionCreationLimiter,
   transactionOperationsLimiter,
+  validate('transaction', 'create'), // ✅ Validation centralisée
   transactionController.createTransaction
 );
 
 /**
  * @route   GET /api/transactions/list
  * @desc    Lister toutes les transactions de l'utilisateur
- * @access  Private (authentification requise)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   page?: number,
- *   limit?: number,
- *   account?: string - ID du compte,
- *   category?: string,
- *   type?: string - income|expense|transfer,
- *   startDate?: string - ISO date,
- *   endDate?: string - ISO date,
- *   search?: string,
- *   sortBy?: string - date|amount|description,
- *   sortOrder?: string - asc|desc
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     transactions: [TransactionObject],
- *     pagination: PaginationObject,
- *     stats: {
- *       totalIncome: number,
- *       totalExpense: number,
- *       totalTransactions: number,
- *       avgTransactionAmount: number
- *     },
- *     filters: FilterObject
- *   }
- * }
+ * @access  Private
  */
 router.get('/list',
   authenticate,
   transactionOperationsLimiter,
+  validate('transaction', 'filter', 'query'), // ✅ Validation centralisée
   transactionController.getUserTransactions
 );
 
 /**
  * @route   GET /api/transactions/:transactionId
  * @desc    Obtenir détails d'une transaction spécifique
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     transaction: TransactionObject (with relatedTransactions)
- *   }
- * }
+ * @access  Private
  */
 router.get('/:transactionId',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
   transactionController.getTransactionById
 );
 
 /**
  * @route   PUT /api/transactions/:transactionId
  * @desc    Mettre à jour une transaction
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   amount?: number,
- *   description?: string,
- *   category?: string,
- *   subcategory?: string,
- *   date?: string,
- *   tags?: string[],
- *   notes?: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Transaction mise à jour avec succès",
- *   data: {
- *     transaction: TransactionObject
- *   }
- * }
+ * @access  Private
  */
 router.put('/:transactionId',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
+  validate('transaction', 'update'), // ✅ Validation centralisée
   transactionController.updateTransaction
 );
 
 /**
  * @route   DELETE /api/transactions/:transactionId
  * @desc    Supprimer une transaction
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   reason?: string - Raison de la suppression,
- *   permanent?: boolean - Suppression définitive (admin seulement)
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Transaction supprimée avec succès",
- *   data: {
- *     deletedTransaction: TransactionObject
- *   }
- * }
+ * @access  Private
  */
 router.delete('/:transactionId',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
   transactionController.deleteTransaction
 );
 
@@ -340,106 +171,36 @@ router.delete('/:transactionId',
 /**
  * @route   GET /api/transactions/analytics/categories
  * @desc    Analytics des transactions par catégorie
- * @access  Private (authentification requise)
- * @middleware authenticate + analyticsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   startDate?: string - ISO date,
- *   endDate?: string - ISO date,
- *   type?: string - income|expense (défaut: expense),
- *   limit?: number - Nombre de catégories (défaut: 10)
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     analytics: [CategoryAnalyticsObject],
- *     summary: {
- *       totalAmount: number,
- *       totalCategories: number,
- *       period: { startDate, endDate },
- *       type: string
- *     }
- *   }
- * }
+ * @access  Private
  */
 router.get('/analytics/categories',
   authenticate,
   analyticsLimiter,
+  validate('transaction', 'analytics', 'query'), // ✅ Validation centralisée
   transactionController.getCategoryAnalytics
 );
 
 /**
  * @route   GET /api/transactions/analytics/monthly
  * @desc    Statistiques mensuelles des transactions
- * @access  Private (authentification requise)
- * @middleware authenticate + analyticsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   year?: number - Année (défaut: année courante),
- *   months?: number - Nombre de mois à inclure (défaut: 12)
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     monthlyStats: [MonthlyStatsObject],
- *     summary: {
- *       totalMonths: number,
- *       avgMonthlyIncome: number,
- *       avgMonthlyExpense: number,
- *       totalNet: number
- *     }
- *   }
- * }
+ * @access  Private
  */
 router.get('/analytics/monthly',
   authenticate,
   analyticsLimiter,
+  validate('transaction', 'monthlyStats', 'query'), // ✅ Validation centralisée
   transactionController.getMonthlyStats
 );
 
 /**
  * @route   GET /api/transactions/search
  * @desc    Recherche avancée dans les transactions
- * @access  Private (authentification requise)
- * @middleware authenticate + searchLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   q: string (requis) - Terme de recherche,
- *   limit?: number - Nombre de résultats (défaut: 20),
- *   includeDeleted?: boolean - Inclure transactions supprimées
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     searchTerm: string,
- *     totalResults: number,
- *     transactions: [TransactionObject],
- *     groupedByCategory: [GroupedResultsObject],
- *     searchStats: {
- *       categories: number,
- *       dateRange: { oldest, newest }
- *     }
- *   }
- * }
+ * @access  Private
  */
 router.get('/search',
   authenticate,
   searchLimiter,
+  validate('transaction', 'search', 'query'), // ✅ Validation centralisée
   transactionController.searchTransactions
 );
 
@@ -450,122 +211,51 @@ router.get('/search',
 /**
  * @route   POST /api/transactions/:transactionId/duplicate
  * @desc    Dupliquer une transaction existante
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   adjustments?: {
- *     amount?: number,
- *     description?: string,
- *     category?: string
- *   },
- *   newDate?: string - ISO date,
- *   newDescription?: string
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Transaction dupliquée avec succès",
- *   data: {
- *     originalTransaction: TransactionObject,
- *     duplicatedTransaction: TransactionObject
- *   }
- * }
+ * @access  Private
  */
 router.post('/:transactionId/duplicate',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
+  validate('transaction', 'duplicate'), // ✅ Validation centralisée
   transactionController.duplicateTransaction
 );
 
 /**
  * @route   PUT /api/transactions/:transactionId/confirm
  * @desc    Confirmer une transaction en attente
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Transaction confirmée avec succès",
- *   data: {
- *     transaction: TransactionObject
- *   }
- * }
+ * @access  Private
  */
 router.put('/:transactionId/confirm',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
   transactionController.confirmTransaction
 );
 
 /**
  * @route   POST /api/transactions/:transactionId/receipt
  * @desc    Ajouter un reçu à une transaction
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   receiptUrl: string (requis) - URL du reçu uploadé,
- *   originalName?: string,
- *   size?: number,
- *   publicId?: string - ID Cloudinary
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Reçu ajouté avec succès",
- *   data: {
- *     transaction: TransactionObject
- *   }
- * }
+ * @access  Private
  */
 router.post('/:transactionId/receipt',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
+  validate('transaction', 'addReceipt'), // ✅ Validation centralisée
   transactionController.addReceipt
 );
 
 /**
  * @route   PUT /api/transactions/:transactionId/location
- * @desc    Ajouter une localisation à une transaction
- * @access  Private (authentification requise + ownership)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Body: {
- *   latitude: number (requis),
- *   longitude: number (requis),
- *   name?: string,
- *   address?: string,
- *   accuracy?: number
- * }
- * 
- * Response: {
- *   success: true,
- *   message: "Localisation ajoutée avec succès",
- *   data: {
- *     transaction: TransactionObject
- *   }
- * }
+ * @desc    Ajouter/modifier la localisation d'une transaction
+ * @access  Private
  */
 router.put('/:transactionId/location',
   authenticate,
   transactionOperationsLimiter,
+  validateObjectId('transactionId'), // ✅ Validation ID
+  validate('transaction', 'addLocation'), // ✅ Validation centralisée
   transactionController.addLocation
 );
 
@@ -576,209 +266,23 @@ router.put('/:transactionId/location',
 /**
  * @route   GET /api/transactions/suggestions
  * @desc    Obtenir suggestions de transactions basées sur l'historique
- * @access  Private (authentification requise)
- * @middleware authenticate + transactionOperationsLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   category?: string - Filtrer par catégorie,
- *   description?: string - Filtrer par description,
- *   limit?: number - Nombre de suggestions (défaut: 5)
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     personalSuggestions: [SuggestionObject],
- *     quickTemplates: [TemplateObject],
- *     totalSuggestions: number
- *   }
- * }
+ * @access  Private
  */
 router.get('/suggestions',
   authenticate,
   transactionOperationsLimiter,
+  validate('transaction', 'suggestions', 'query'), // ✅ Validation centralisée
   transactionController.getTransactionSuggestions
 );
 
-/**
- * @route   GET /api/transactions/templates
- * @desc    Lister templates de transactions rapides
- * @access  Private (authentification requise)
- * @middleware authenticate + generalAuthLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     templates: [TemplateObject],
- *     categories: [CategoryObject]
- *   }
- * }
- */
-router.get('/templates',
-  authenticate,
-  generalAuthLimiter,
-  async (req, res) => {
-    try {
-      const { QUICK_TRANSACTION_TEMPLATES, TRANSACTION_CATEGORIES } = require('../utils/constants');
-      
-      const templates = Object.entries(QUICK_TRANSACTION_TEMPLATES).map(([key, template]) => ({
-        id: key,
-        ...template,
-        categoryInfo: TRANSACTION_CATEGORIES[template.category] || {}
-      }));
-
-      const categories = Object.entries(TRANSACTION_CATEGORIES).map(([key, category]) => ({
-        id: key,
-        ...category
-      }));
-
-      res.status(200).json({
-        success: true,
-        data: {
-          templates,
-          categories,
-          totalTemplates: templates.length,
-          totalCategories: categories.length
-        },
-        timestamp: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur récupération templates',
-        error: 'templates_fetch_error'
-      });
-    }
-  }
-);
-
-/**
- * @route   GET /api/transactions/validate/amount/:amount
- * @desc    Valider un montant de transaction
- * @access  Private (authentification requise)
- * @middleware authenticate + generalAuthLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   accountId?: string - ID du compte pour vérifier limites,
- *   type?: string - Type de transaction
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     isValid: boolean,
- *     amount: number,
- *     issues?: string[],
- *     suggestions?: string[]
- *   }
- * }
- */
-router.get('/validate/amount/:amount',
-  authenticate,
-  generalAuthLimiter,
-  async (req, res) => {
-    try {
-      const { amount } = req.params;
-      const { accountId, type = 'expense' } = req.query;
-      const userId = req.user.userId;
-      
-      const numAmount = parseFloat(amount);
-      const issues = [];
-      const suggestions = [];
-
-      // Validation de base
-      if (isNaN(numAmount) || numAmount <= 0) {
-        issues.push('Le montant doit être un nombre positif');
-      }
-
-      // Vérification limites si compte fourni
-      if (accountId && !issues.length) {
-        const Account = require('../models/Account');
-        const account = await Account.findOne({
-          _id: accountId,
-          user: userId,
-          isActive: true
-        });
-
-        if (account) {
-          const transactionAmount = type === 'expense' ? -numAmount : numAmount;
-          
-          if (type === 'expense' && !account.canProcessTransaction(transactionAmount)) {
-            issues.push('Solde insuffisant ou limites dépassées');
-            suggestions.push(`Solde actuel: ${account.currentBalance} ${account.currency}`);
-            
-            if (account.creditLimit > 0) {
-              suggestions.push(`Limite de crédit: ${account.creditLimit} ${account.currency}`);
-            }
-          }
-        }
-      }
-
-      // Suggestions contextuelles
-      if (numAmount > 10000) {
-        suggestions.push('Montant élevé - vérifiez deux fois');
-      }
-
-      res.status(200).json({
-        success: true,
-        data: {
-          isValid: issues.length === 0,
-          amount: numAmount,
-          issues: issues.length > 0 ? issues : undefined,
-          suggestions: suggestions.length > 0 ? suggestions : undefined
-        },
-        timestamp: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur validation montant',
-        error: 'amount_validation_error'
-      });
-    }
-  }
-);
-
 // ===================================================================
-// ROUTES ADMINISTRATIVES (ADMIN SEULEMENT)
+// ROUTES ADMIN
 // ===================================================================
 
 /**
  * @route   GET /api/transactions/admin/stats
- * @desc    Statistiques globales des transactions (admin seulement)
+ * @desc    Statistiques globales des transactions (admin)
  * @access  Private (admin uniquement)
- * @middleware authenticate + requireRole('admin') + adminLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     overview: {
- *       totalTransactions: number,
- *       totalAmount: [AmountByTypeObject],
- *       recentTransactions: number,
- *       pendingTransactions: number
- *     },
- *     topCategories: [CategoryStatsObject]
- *   }
- * }
  */
 router.get('/admin/stats',
   authenticate,
@@ -787,153 +291,74 @@ router.get('/admin/stats',
   transactionController.getTransactionsStats
 );
 
+// ===================================================================
+// ROUTE INFO & DOCUMENTATION
+// ===================================================================
+
 /**
- * @route   GET /api/transactions/admin/pending
- * @desc    Lister transactions en attente de confirmation (admin seulement)
- * @access  Private (admin uniquement)
- * @middleware authenticate + requireRole('admin') + adminLimiter
- * 
- * Headers: {
- *   Authorization: "Bearer <accessToken>"
- * }
- * 
- * Query Parameters: {
- *   limit?: number,
- *   page?: number
- * }
- * 
- * Response: {
- *   success: true,
- *   data: {
- *     pendingTransactions: [TransactionObject],
- *     totalPending: number,
- *     oldestPending: date
- *   }
- * }
+ * @route   GET /api/transactions
+ * @desc    Information sur les endpoints transactions disponibles
+ * @access  Public
  */
-router.get('/admin/pending',
-  authenticate,
-  requireRole('admin'),
-  adminLimiter,
-  async (req, res) => {
-    try {
-      const { limit = 50, page = 1 } = req.query;
-      const skip = (parseInt(page) - 1) * parseInt(limit);
-      
-      const Transaction = require('../models/Transaction');
-      
-      // Transactions en attente
-      const [pendingTransactions, totalPending] = await Promise.all([
-        Transaction.find({ isConfirmed: false })
-          .populate('user', 'firstName lastName email')
-          .populate('account', 'name bankName')
-          .sort({ createdAt: 1 }) // Plus anciennes en premier
-          .skip(skip)
-          .limit(parseInt(limit)),
-        Transaction.countDocuments({ isConfirmed: false })
-      ]);
-      
-      // Plus ancienne transaction en attente
-      const oldestPending = pendingTransactions.length > 0 ? 
-        pendingTransactions[0].createdAt : null;
-      
-      res.status(200).json({
-        success: true,
-        data: {
-          pendingTransactions: pendingTransactions.map(t => ({
-            id: t._id,
-            amount: t.amount,
-            type: t.type,
-            description: t.description,
-            category: t.category,
-            date: t.date,
-            createdAt: t.createdAt,
-            user: {
-              id: t.user._id,
-              name: `${t.user.firstName} ${t.user.lastName}`,
-              email: t.user.email
-            },
-            account: {
-              id: t.account._id,
-              name: t.account.name,
-              bank: t.account.bankName
-            }
-          })),
-          totalPending,
-          oldestPending,
-          pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
-            total: totalPending,
-            pages: Math.ceil(totalPending / parseInt(limit))
-          }
+router.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API Transactions FinApp Haiti 💰',
+    data: {
+      service: 'transactions',
+      version: '1.0.0',
+      description: 'Gestion complète des transactions financières haïtiennes',
+      endpoints: {
+        crud: {
+          create: 'POST /api/transactions',
+          list: 'GET /api/transactions/list',
+          getById: 'GET /api/transactions/:transactionId',
+          update: 'PUT /api/transactions/:transactionId',
+          delete: 'DELETE /api/transactions/:transactionId'
         },
-        timestamp: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      console.error('❌ Erreur admin pending transactions:', error.message);
-      
-      res.status(500).json({
-        success: false,
-        message: 'Erreur récupération transactions en attente',
-        error: 'admin_pending_error'
-      });
-    }
-  }
-);
-
-// ===================================================================
-// MIDDLEWARE D'ERREUR SPÉCIALISÉ
-// ===================================================================
-
-/**
- * Middleware de gestion d'erreurs spécifique aux transactions
- */
-router.use((err, req, res, next) => {
-  console.error('❌ Erreur Route Transactions:', err.message);
-  
-  // Erreurs MongoDB spécifiques
-  if (err.name === 'CastError') {
-    return res.status(400).json({
-      success: false,
-      message: 'ID de transaction invalide',
-      error: 'invalid_transaction_id',
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  // Erreurs de validation
-  if (err.name === 'ValidationError') {
-    return res.status(400).json({
-      success: false,
-      message: 'Erreur de validation',
-      error: 'transaction_validation_error',
-      details: err.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  // Erreurs de solde insuffisant
-  if (err.message.includes('insufficient')) {
-    return res.status(400).json({
-      success: false,
-      message: 'Solde insuffisant pour cette transaction',
-      error: 'insufficient_funds',
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  // Erreur générique
-  res.status(500).json({
-    success: false,
-    message: 'Erreur interne des transactions',
-    error: 'transactions_internal_error',
+        analytics: {
+          categories: 'GET /api/transactions/analytics/categories',
+          monthly: 'GET /api/transactions/analytics/monthly',
+          search: 'GET /api/transactions/search'
+        },
+        actions: {
+          duplicate: 'POST /api/transactions/:transactionId/duplicate',
+          confirm: 'PUT /api/transactions/:transactionId/confirm',
+          addReceipt: 'POST /api/transactions/:transactionId/receipt',
+          addLocation: 'PUT /api/transactions/:transactionId/location'
+        },
+        utilities: {
+          suggestions: 'GET /api/transactions/suggestions'
+        },
+        admin: {
+          stats: 'GET /api/transactions/admin/stats'
+        }
+      },
+      rateLimits: {
+        operations: '100 / 15 minutes',
+        creation: '50 / 1 hour',
+        analytics: '200 / 1 hour',
+        search: '60 / 15 minutes'
+      },
+      supportedTypes: ['income', 'expense', 'transfer'],
+      supportedCategories: [
+        'salary', 'business', 'investment', 'gift', 'other_income',
+        'food', 'transport', 'housing', 'utilities', 'health', 'education',
+        'entertainment', 'shopping', 'debt_payment', 'savings', 'other_expense'
+      ],
+      supportedCurrencies: ['HTG', 'USD'],
+      security: {
+        authentication: 'JWT required',
+        ownership: 'Automatic user isolation',
+        validation: 'Joi centralized validation', // ✅ Mise à jour
+        rateLimit: 'Operation-based limiting'
+      }
+    },
     timestamp: new Date().toISOString()
   });
 });
 
 // ===================================================================
-// EXPORT ROUTER
+// EXPORTS
 // ===================================================================
 module.exports = router;
