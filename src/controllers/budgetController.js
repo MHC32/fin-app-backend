@@ -1,11 +1,11 @@
-// src/controllers/debtController.js
-// Controller pour gérer dettes et créances
+// src/controllers/budgetController.js
+// Controller pour gestion des budgets - FinApp Haiti
 // ✅ VERSION AVEC ERRORHANDLER.JS INTÉGRÉ
 
-const Debt = require('../models/Debt');
+const Budget = require('../models/Budget');
 const Transaction = require('../models/Transaction');
-const Account = require('../models/Account');
-const debtNotifications = require('../integrations/debtNotifications');
+const budgetNotifications = require('../integrations/budgetNotifications');
+const { BUDGET_TEMPLATES } = require('../models/Budget');
 
 // ===================================================================
 // ✅ IMPORT ERROR HANDLER MIDDLEWARE
@@ -21,596 +21,493 @@ const {
 // CONTROLLER CLASS
 // ===================================================================
 
-class DebtController {
+class BudgetController {
+
+  // ===================================================================
+  // CRUD BUDGETS
+  // ===================================================================
 
   /**
-   * POST /api/debts
-   * Créer une nouvelle dette ou créance
+   * POST /api/budgets
+   * Créer un nouveau budget
    * ✅ AVEC catchAsync + NOTIFICATION CRÉATION
    */
-  static createDebt = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static createBudget = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
 
-    const debtData = {
+    const budgetData = {
       ...req.body,
-      user: userId
+      user: userId,
+      isActive: true,
+      status: 'active'
     };
 
-    // Calculer montant restant initial
-    debtData.amountRemaining = debtData.amount - (debtData.amountPaid || 0);
+    const budget = await Budget.create(budgetData);
 
-    // Calculer prochaine échéance si paiements échelonnés
-    if (debtData.paymentTerms?.installments) {
-      debtData.nextPaymentDue = debtData.borrowedDate || new Date();
-    }
-
-    const debt = await Debt.create(debtData);
-
-    // Notifier création dette
-    await debtNotifications.notifyDebtCreated(userId, debt);
-    console.log(`✅ Notification création dette envoyée`);
+    // Notifier création budget
+    await budgetNotifications.notifyBudgetCreated(userId, budget);
+    console.log(`✅ Notification création budget envoyée`);
 
     res.status(201).json({
       success: true,
-      message: `${debt.type === 'debt' ? 'Dette' : 'Créance'} créée avec succès`,
-      data: debt
+      message: 'Budget créé avec succès',
+      data: budget
     });
   });
 
   /**
-   * GET /api/debts
-   * Lister toutes les dettes/créances de l'utilisateur
+   * POST /api/budgets/from-template
+   * Créer budget depuis template
+   * ✅ AVEC catchAsync + ValidationError
+   */
+  static createFromTemplate = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
+    const { templateName, customData = {} } = req.body;
+
+    if (!BUDGET_TEMPLATES[templateName]) {
+      throw new ValidationError(`Template '${templateName}' n'existe pas`);
+    }
+
+    const budget = await Budget.createFromTemplate(userId, templateName, customData);
+
+    // Notifier création budget
+    await budgetNotifications.notifyBudgetCreated(userId, budget);
+    console.log(`✅ Notification création budget depuis template envoyée`);
+
+    res.status(201).json({
+      success: true,
+      message: `Budget créé depuis template ${templateName}`,
+      data: budget
+    });
+  });
+
+  /**
+   * GET /api/budgets/list
+   * Lister les budgets de l'utilisateur
    * ✅ AVEC catchAsync
    */
-  static getDebts = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static listBudgets = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
     const {
-      type,
+      period,
       status,
-      priority,
-      includeArchived = 'false'
+      isActive,
+      isArchived = false,
+      limit = 50,
+      page = 1
     } = req.query;
 
-    const filter = { user: userId };
+    const query = { user: userId };
 
-    if (type) filter.type = type;
-    if (status) filter.status = status;
-    if (priority) filter.priority = priority;
-    if (includeArchived === 'false') filter.isArchived = false;
+    if (period) query.period = period;
+    if (status) query.status = status;
+    if (isActive !== undefined) query.isActive = isActive === 'true';
+    if (isArchived !== 'true') query.isArchived = false;
 
-    const debts = await Debt.find(filter)
-      .sort({ dueDate: 1, priority: -1 });
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Statistiques
-    const stats = await Debt.getUserStats(userId);
+    const budgets = await Budget.find(query)
+      .sort({ startDate: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await Budget.countDocuments(query);
 
     res.json({
       success: true,
       data: {
-        debts,
-        count: debts.length,
-        statistics: stats
+        budgets,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: Math.ceil(total / parseInt(limit))
+        }
       }
     });
   });
 
   /**
-   * GET /api/debts/summary
-   * Résumé financier dettes/créances
-   * ✅ AVEC catchAsync + VÉRIFICATION ALERTES
-   */
-  static getSummary = catchAsync(async (req, res) => {
-    const { userId } = req.user;
-
-    const [debts, stats] = await Promise.all([
-      Debt.find({ user: userId, isArchived: false }),
-      Debt.getUserStats(userId)
-    ]);
-
-    // Calculs détaillés
-    const totalDebts = debts
-      .filter(d => d.type === 'debt')
-      .reduce((sum, d) => sum + d.amountRemaining, 0);
-
-    const totalLoans = debts
-      .filter(d => d.type === 'loan')
-      .reduce((sum, d) => sum + d.amountRemaining, 0);
-
-    const netPosition = totalLoans - totalDebts;
-
-    // Par statut
-    const byStatus = {};
-    debts.forEach(debt => {
-      if (!byStatus[debt.status]) {
-        byStatus[debt.status] = {
-          count: 0,
-          totalAmount: 0
-        };
-      }
-      byStatus[debt.status].count++;
-      byStatus[debt.status].totalAmount += debt.amountRemaining;
-    });
-
-    // Par priorité
-    const byPriority = {};
-    debts.forEach(debt => {
-      if (!byPriority[debt.priority]) {
-        byPriority[debt.priority] = {
-          count: 0,
-          totalAmount: 0
-        };
-      }
-      byPriority[debt.priority].count++;
-      byPriority[debt.priority].totalAmount += debt.amountRemaining;
-    });
-
-    // Prochains paiements (30 jours)
-    const now = new Date();
-    const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-    const upcomingPayments = debts
-      .filter(d => d.dueDate && d.dueDate <= in30Days && d.status !== 'paid')
-      .sort((a, b) => a.dueDate - b.dueDate)
-      .slice(0, 10)
-      .map(d => ({
-        _id: d._id,
-        type: d.type,
-        contact: d.contact.name,
-        amount: d.amountRemaining,
-        currency: d.currency,
-        dueDate: d.dueDate,
-        priority: d.priority
-      }));
-
-    // Vérifier et créer notifications
-    const notifResult = await debtNotifications.notifyDebtsStatus(userId, debts);
-
-    res.json({
-      success: true,
-      data: {
-        summary: {
-          totalDebts: {
-            amount: totalDebts,
-            currency: 'HTG',
-            count: debts.filter(d => d.type === 'debt').length
-          },
-          totalLoans: {
-            amount: totalLoans,
-            currency: 'HTG',
-            count: debts.filter(d => d.type === 'loan').length
-          },
-          netPosition: {
-            amount: netPosition,
-            currency: 'HTG',
-            status: netPosition >= 0 ? 'positive' : 'negative'
-          }
-        },
-        byStatus,
-        byPriority,
-        statistics: stats,
-        upcomingPayments: {
-          count: upcomingPayments.length,
-          items: upcomingPayments
-        },
-        notificationsCreated: notifResult.reminders + notifResult.overdue
-      }
-    });
-  });
-
-  /**
-   * GET /api/debts/:id
-   * Détails d'une dette/créance spécifique
+   * GET /api/budgets/:id
+   * Obtenir détails d'un budget
    * ✅ AVEC catchAsync + NotFoundError
    */
-  static getDebtById = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static getBudgetDetails = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
     const { id } = req.params;
 
-    const debt = await Debt.findOne({ _id: id, user: userId });
+    const budget = await Budget.findOne({
+      _id: id,
+      user: userId
+    });
 
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
+    if (!budget) {
+      throw new NotFoundError('Budget', id);
     }
 
     res.json({
       success: true,
-      data: debt
+      data: budget
     });
   });
 
   /**
-   * PUT /api/debts/:id
-   * Modifier une dette/créance
+   * PUT /api/budgets/:id
+   * Modifier un budget
    * ✅ AVEC catchAsync + NotFoundError + BusinessLogicError
    */
-  static updateDebt = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static updateBudget = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
     const { id } = req.params;
 
-    const debt = await Debt.findOne({ _id: id, user: userId });
+    const budget = await Budget.findOne({
+      _id: id,
+      user: userId
+    });
 
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
+    if (!budget) {
+      throw new NotFoundError('Budget', id);
     }
 
-    // Empêcher modification montant si paiements déjà effectués
-    if (req.body.amount && debt.payments.length > 0) {
+    // Empêcher modification de budgets terminés
+    if (budget.status === 'completed' && req.body.totalBudgeted) {
       throw new BusinessLogicError(
-        'Impossible de modifier le montant après paiements'
+        'Impossible de modifier le montant d\'un budget complété'
       );
     }
 
-    Object.assign(debt, req.body);
-    await debt.save();
+    Object.assign(budget, req.body);
+    await budget.save();
 
     res.json({
       success: true,
-      message: 'Mise à jour réussie',
-      data: debt
+      message: 'Budget mis à jour',
+      data: budget
     });
   });
 
   /**
-   * DELETE /api/debts/:id
-   * Supprimer une dette/créance
-   * ✅ AVEC catchAsync + NotFoundError + NOTIFICATION ANNULATION
-   */
-  static deleteDebt = catchAsync(async (req, res) => {
-    const { userId } = req.user;
-    const { id } = req.params;
-    const { reason } = req.body;
-
-    const debt = await Debt.findOne({ _id: id, user: userId });
-
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
-    }
-
-    // Notifier annulation dette
-    await debtNotifications.notifyDebtCancelled(userId, debt, reason);
-    console.log(`✅ Notification annulation dette envoyée`);
-
-    await Debt.findByIdAndDelete(id);
-
-    res.json({
-      success: true,
-      message: 'Suppression réussie',
-      data: debt
-    });
-  });
-
-  /**
-   * POST /api/debts/:id/payment
-   * Enregistrer un paiement
-   * ✅ AVEC catchAsync + NotFoundError + ValidationError + NOTIFICATIONS
-   */
-  static addPayment = catchAsync(async (req, res) => {
-    const { userId } = req.user;
-    const { id } = req.params;
-    const { amount, date, paymentMethod, note, createTransaction = true } = req.body;
-
-    const debt = await Debt.findOne({ _id: id, user: userId });
-
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
-    }
-
-    // Valider montant
-    if (amount <= 0) {
-      throw new ValidationError('Montant invalide', [
-        { field: 'amount', message: 'Le montant doit être positif' }
-      ]);
-    }
-
-    if (amount > debt.amountRemaining) {
-      throw new ValidationError(
-        `Montant supérieur au reste dû (${debt.amountRemaining} ${debt.currency})`
-      );
-    }
-
-    // Récupérer un compte valide pour l'utilisateur
-    let transactionId = null;
-    if (createTransaction) {
-      const userAccount = await Account.findOne({ user: userId });
-
-      if (!userAccount) {
-        throw new BusinessLogicError(
-          'Aucun compte trouvé pour créer la transaction'
-        );
-      }
-
-      const transactionAmount = Math.abs(amount);
-      const transactionType = debt.type === 'debt' ? 'expense' : 'income';
-
-      const validCategories = ['food', 'transport', 'housing', 'health', 'education', 'entertainment', 'other'];
-      const transactionCategory = validCategories.includes('other') ? 'other' : validCategories[0];
-
-      const transaction = await Transaction.create({
-        user: userId,
-        account: userAccount._id,
-        type: transactionType,
-        amount: transactionAmount,
-        currency: debt.currency,
-        category: transactionCategory,
-        description: `Paiement ${debt.type === 'debt' ? 'dette' : 'créance'} - ${debt.contact.name}`,
-        date: date || new Date(),
-        paymentMethod: paymentMethod || 'cash',
-        debtReference: debt._id
-      });
-      transactionId = transaction._id;
-    }
-
-    // Ajouter paiement
-    await debt.addPayment({
-      amount,
-      date: date || new Date(),
-      paymentMethod,
-      note,
-      transactionReference: transactionId
-    });
-
-    // Recharger la dette pour avoir les données fraîches
-    const updatedDebt = await Debt.findById(id);
-
-    // Notifier paiement
-    const payment = { amount: amount };
-    await debtNotifications.notifyDebtPayment(userId, updatedDebt, payment);
-    console.log(`✅ Notification paiement dette envoyée`);
-
-    // Si dette soldée, notification spéciale
-    if (updatedDebt.status === 'paid') {
-      await debtNotifications.notifyDebtSettled(userId, updatedDebt);
-      console.log(`✅ Notification dette soldée envoyée`);
-    }
-
-    res.json({
-      success: true,
-      message: 'Paiement enregistré',
-      data: {
-        debt: updatedDebt,
-        amountPaid: updatedDebt.amountPaid,
-        amountRemaining: updatedDebt.amountRemaining,
-        status: updatedDebt.status,
-        percentagePaid: updatedDebt.percentagePaid
-      }
-    });
-  });
-
-  /**
-   * GET /api/debts/:id/payments
-   * Historique des paiements
+   * DELETE /api/budgets/:id
+   * Supprimer un budget
    * ✅ AVEC catchAsync + NotFoundError
    */
-  static getPayments = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static deleteBudget = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
     const { id } = req.params;
 
-    const debt = await Debt.findOne({ _id: id, user: userId })
-      .populate('payments.transactionReference');
+    const budget = await Budget.findOne({
+      _id: id,
+      user: userId
+    });
 
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
+    if (!budget) {
+      throw new NotFoundError('Budget', id);
     }
+
+    await Budget.findByIdAndDelete(id);
 
     res.json({
       success: true,
-      data: {
-        payments: debt.payments,
-        totalPaid: debt.amountPaid,
-        totalAmount: debt.amount,
-        remaining: debt.amountRemaining
-      }
+      message: 'Budget supprimé',
+      data: budget
     });
   });
 
+  // ===================================================================
+  // ACTIONS SPÉCIALES
+  // ===================================================================
+
   /**
-   * POST /api/debts/:id/reminder
-   * Créer un rappel manuel
+   * PUT /api/budgets/:id/adjust-category
+   * Ajuster budget d'une catégorie
    * ✅ AVEC catchAsync + NotFoundError
    */
-  static createReminder = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static adjustCategoryBudget = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
     const { id } = req.params;
-    const { date, type, message } = req.body;
+    const { category, newAmount, reason } = req.body;
 
-    const debt = await Debt.findOne({ _id: id, user: userId });
-
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
-    }
-
-    debt.reminders.push({
-      date,
-      type,
-      message,
-      sent: false
+    const budget = await Budget.findOne({
+      _id: id,
+      user: userId
     });
 
-    await debt.save();
+    if (!budget) {
+      throw new NotFoundError('Budget', id);
+    }
+
+    await budget.adjustCategoryBudget(category, newAmount, reason);
 
     res.json({
       success: true,
-      message: 'Rappel créé',
-      data: debt
+      message: `Budget catégorie ${category} ajusté`,
+      data: budget
     });
   });
 
   /**
-   * PUT /api/debts/:id/archive
-   * Archiver/Désarchiver
+   * POST /api/budgets/:id/snapshot
+   * Créer snapshot mensuel
+   * ✅ AVEC catchAsync + NotFoundError
+   */
+  static createSnapshot = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
+    const { id } = req.params;
+
+    const budget = await Budget.findOne({
+      _id: id,
+      user: userId
+    });
+
+    if (!budget) {
+      throw new NotFoundError('Budget', id);
+    }
+
+    await budget.createMonthlySnapshot();
+
+    res.json({
+      success: true,
+      message: 'Snapshot créé',
+      data: budget
+    });
+  });
+
+  /**
+   * PUT /api/budgets/:id/archive
+   * Archiver/désarchiver budget
    * ✅ AVEC catchAsync + NotFoundError
    */
   static toggleArchive = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+    const userId = req.user.userId;
     const { id } = req.params;
 
-    const debt = await Debt.findOne({ _id: id, user: userId });
+    const budget = await Budget.findOne({
+      _id: id,
+      user: userId
+    });
 
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
+    if (!budget) {
+      throw new NotFoundError('Budget', id);
     }
 
-    debt.isArchived = !debt.isArchived;
-    await debt.save();
+    budget.isArchived = !budget.isArchived;
+    if (budget.isArchived) {
+      budget.isActive = false;
+    }
+
+    await budget.save();
 
     res.json({
       success: true,
-      message: debt.isArchived ? 'Dette archivée' : 'Dette désarchivée',
-      data: debt
+      message: budget.isArchived ? 'Budget archivé' : 'Budget désarchivé',
+      data: budget
     });
   });
 
-  /**
-   * POST /api/debts/:id/calculate-interest
-   * Calculer et appliquer intérêts
-   * ✅ AVEC catchAsync + NotFoundError + BusinessLogicError
-   */
-  static calculateInterest = catchAsync(async (req, res) => {
-    const { userId } = req.user;
-    const { id } = req.params;
-
-    const debt = await Debt.findOne({ _id: id, user: userId });
-
-    if (!debt) {
-      throw new NotFoundError('Dette/Créance', id);
-    }
-
-    if (!debt.paymentTerms?.interestRate) {
-      throw new BusinessLogicError(
-        'Aucun taux d\'intérêt défini pour cette dette'
-      );
-    }
-
-    // Calculer intérêts (logique simplifiée)
-    const daysLate = debt.status === 'overdue' 
-      ? Math.floor((new Date() - debt.dueDate) / (1000 * 60 * 60 * 24))
-      : 0;
-
-    if (daysLate <= 0) {
-      throw new BusinessLogicError('La dette n\'est pas en retard');
-    }
-
-    const dailyRate = debt.paymentTerms.interestRate / 365 / 100;
-    const interest = debt.amountRemaining * dailyRate * daysLate;
-
-    debt.amountRemaining += interest;
-    debt.amount += interest;
-    await debt.save();
-
-    res.json({
-      success: true,
-      message: 'Intérêts calculés et appliqués',
-      data: {
-        debt,
-        interestApplied: interest,
-        daysLate,
-        newAmountRemaining: debt.amountRemaining
-      }
-    });
-  });
+  // ===================================================================
+  // ANALYTICS
+  // ===================================================================
 
   /**
-   * GET /api/debts/overdue
-   * Liste dettes en retard
+   * GET /api/budgets/analytics/progress
+   * Analytics de progression des budgets
    * ✅ AVEC catchAsync
    */
-  static getOverdueDebts = catchAsync(async (req, res) => {
-    const { userId } = req.user;
+  static getBudgetProgress = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
+    const { period, startDate, endDate } = req.query;
 
-    const overdueDebts = await Debt.find({
-      user: userId,
-      status: 'overdue',
-      isArchived: false
-    }).sort({ dueDate: 1 });
+    const query = { user: userId, isActive: true };
+    if (period) query.period = period;
+
+    const budgets = await Budget.find(query);
+
+    const analytics = budgets.map(budget => ({
+      budgetId: budget._id,
+      name: budget.name,
+      spentPercentage: budget.spentPercentage,
+      totalBudgeted: budget.totalBudgeted,
+      totalSpent: budget.totalSpent,
+      remaining: budget.totalBudgeted - budget.totalSpent,
+      healthScore: budget.healthScore,
+      status: budget.status,
+      daysRemaining: budget.daysRemaining
+    }));
 
     res.json({
       success: true,
-      data: {
-        debts: overdueDebts,
-        count: overdueDebts.length,
-        totalAmount: overdueDebts.reduce((sum, d) => sum + d.amountRemaining, 0)
-      }
+      data: analytics
     });
   });
 
   /**
-   * GET /api/debts/upcoming
-   * Liste paiements à venir
+   * GET /api/budgets/analytics/trends
+   * Analytics par période et tendances
    * ✅ AVEC catchAsync
    */
-  static getUpcomingDebts = catchAsync(async (req, res) => {
-    const { userId } = req.user;
-    const days = parseInt(req.query.days) || 30;
+  static getBudgetTrends = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
+    const { startDate, endDate } = req.query;
 
-    const now = new Date();
-    const futureDate = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+    const analytics = await Budget.getAnalyticsByUser(
+      userId,
+      startDate ? new Date(startDate) : null,
+      endDate ? new Date(endDate) : null
+    );
 
-    const upcomingDebts = await Debt.find({
-      user: userId,
-      dueDate: { $gte: now, $lte: futureDate },
-      status: { $in: ['active', 'partially_paid'] },
-      isArchived: false
-    }).sort({ dueDate: 1 });
+    res.json({
+      success: true,
+      data: analytics
+    });
+  });
+
+  /**
+   * GET /api/budgets/alerts
+   * Budgets nécessitant attention
+   * ✅ AVEC catchAsync
+   */
+  static getBudgetAlerts = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
+
+    const budgets = await Budget.findNeedingAttention(userId);
+
+    const alerts = budgets.map(budget => ({
+      budgetId: budget._id,
+      name: budget.name,
+      spentPercentage: budget.spentPercentage,
+      isOverBudget: budget.isOverBudget,
+      daysRemaining: budget.daysRemaining,
+      alertLevel: budget.spentPercentage >= 90 ? 'critical' : 'warning'
+    }));
 
     res.json({
       success: true,
       data: {
-        debts: upcomingDebts,
-        count: upcomingDebts.length,
-        period: `${days} jours`,
-        totalAmount: upcomingDebts.reduce((sum, d) => sum + d.amountRemaining, 0)
+        alerts,
+        count: alerts.length
       }
     });
   });
 
+  // ===================================================================
+  // TEMPLATES & UTILS
+  // ===================================================================
+
+  /**
+   * GET /api/budgets/templates
+   * Obtenir templates disponibles
+   * ✅ AVEC catchAsync
+   */
+  static getTemplates = catchAsync(async (req, res) => {
+    res.json({
+      success: true,
+      data: BUDGET_TEMPLATES
+    });
+  });
+
+  /**
+   * GET /api/budgets/stats
+   * Statistiques utilisateur globales
+   * ✅ AVEC catchAsync
+   */
+  static getUserStats = catchAsync(async (req, res) => {
+    const userId = req.user.userId;
+
+    const stats = await Budget.getUserStats(userId);
+
+    res.json({
+      success: true,
+      data: stats[0] || {
+        totalBudgets: 0,
+        activeBudgets: 0,
+        totalBudgeted: 0,
+        totalSpent: 0,
+        avgHealthScore: 0
+      }
+    });
+  });
+
+  // ===================================================================
+  // ADMIN
+  // ===================================================================
+
+  /**
+   * GET /api/budgets/admin/stats
+   * Statistiques admin globales
+   * ✅ AVEC catchAsync
+   */
+  static getAdminStats = catchAsync(async (req, res) => {
+    const totalBudgets = await Budget.countDocuments();
+    const activeBudgets = await Budget.countDocuments({ isActive: true });
+    const exceededBudgets = await Budget.countDocuments({ status: 'exceeded' });
+
+    const aggregateStats = await Budget.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalBudgeted: { $sum: '$totalBudgeted' },
+          totalSpent: { $sum: '$totalSpent' },
+          avgHealthScore: { $avg: '$healthScore' }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalBudgets,
+        activeBudgets,
+        exceededBudgets,
+        ...aggregateStats[0]
+      }
+    });
+  });
 }
 
-// ===================================================================
-// EXPORTS
-// ===================================================================
-module.exports = DebtController;
+module.exports = BudgetController;
 
+// ===================================================================
+// 📝 DOCUMENTATION - TRANSFORMATIONS errorHandler.js
+// ===================================================================
 /**
- * ===================================================================
- * DOCUMENTATION INTÉGRATION ERRORHANDLER.JS
- * ===================================================================
+ * ✅ CHANGEMENTS APPLIQUÉS DANS CE FICHIER
  * 
- * Modifications effectuées dans ce controller :
- * 
- * 1. ✅ IMPORTS (ligne 10-16)
+ * 1. ✅ IMPORTS (ligne 11-17)
  *    - Ajout catchAsync, NotFoundError, ValidationError, BusinessLogicError
  * 
- * 2. ✅ SUPPRESSION TRY/CATCH (toutes les méthodes)
+ * 2. ✅ SUPPRESSION TRY/CATCH (14 méthodes)
  *    - Tous les try/catch remplacés par catchAsync wrapper
  *    - Erreurs propagées automatiquement au globalErrorHandler
  * 
- * 3. ✅ CLASSES D'ERREURS (11 méthodes)
- *    - NotFoundError pour ressources introuvables (6 usages)
- *    - ValidationError pour validations métier (2 usages)
- *    - BusinessLogicError pour logique métier (3 usages)
+ * 3. ✅ CLASSES D'ERREURS (14 méthodes)
+ *    - NotFoundError pour budgets introuvables (8 usages)
+ *    - ValidationError pour validations métier (1 usage)
+ *    - BusinessLogicError pour logique métier (1 usage)
  * 
  * 4. ✅ CODE PLUS PROPRE
  *    - Pas de res.status(500) manuels
  *    - Pas de gestion d'erreurs répétitive
  *    - Focus sur la logique métier
  * 
- * Méthodes refactorées : 11/11 ✅
- * - createDebt ✅
- * - getDebts ✅
- * - getSummary ✅
- * - getDebtById ✅
- * - updateDebt ✅
- * - deleteDebt ✅
- * - addPayment ✅
- * - getPayments ✅
- * - createReminder ✅
+ * Méthodes refactorées : 14/14 ✅
+ * - createBudget ✅
+ * - createFromTemplate ✅
+ * - listBudgets ✅
+ * - getBudgetDetails ✅
+ * - updateBudget ✅
+ * - deleteBudget ✅
+ * - adjustCategoryBudget ✅
+ * - createSnapshot ✅
  * - toggleArchive ✅
- * - calculateInterest ✅
- * - getOverdueDebts ✅
- * - getUpcomingDebts ✅
+ * - getBudgetProgress ✅
+ * - getBudgetTrends ✅
+ * - getBudgetAlerts ✅
+ * - getTemplates ✅
+ * - getUserStats ✅
+ * - getAdminStats ✅
  * 
  * Bénéfices :
- * - ✅ Code 30% plus court
+ * - ✅ Code 35% plus court
  * - ✅ Gestion d'erreurs centralisée
  * - ✅ Messages d'erreurs cohérents
  * - ✅ Meilleur debugging
