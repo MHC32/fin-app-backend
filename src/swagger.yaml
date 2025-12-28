@@ -1,0 +1,1890 @@
+openapi: 3.0.3
+info:
+  title: FinApp Haiti API
+  description: |
+    API complète de gestion financière adaptée au contexte haïtien 🇭🇹
+    
+    ## Fonctionnalités principales
+    - 💰 Gestion multi-comptes (HTG/USD, MonCash, NatCash)
+    - 📊 Transactions et catégorisation intelligente
+    - 💳 Budgets personnalisés avec alertes automatiques
+    - 🤝 Gestion des Sols/Tontines traditionnels
+    - 💸 Suivi dettes et créances
+    - 📈 Investissements et placements
+    - 🤖 Intelligence artificielle et prédictions
+    - 🔔 Notifications temps réel
+    
+    ## Authentification
+    L'API utilise JWT (JSON Web Tokens) pour l'authentification.
+    
+    Pour accéder aux endpoints protégés, incluez le token dans le header:
+    ```
+    Authorization: Bearer {votre_token}
+    ```
+    
+    ## Environnements
+    - **Production**: https://api.finapphaiti.com
+    - **Développement**: http://localhost:3001
+    
+  version: 1.0.0
+  contact:
+    name: FinApp Haiti Support
+    email: support@finapphaiti.com
+  license:
+    name: Propriétaire
+    
+servers:
+  - url: http://localhost:3001/api
+    description: Serveur de développement
+  - url: https://api.finapphaiti.com/api
+    description: Serveur de production
+
+tags:
+  - name: Authentication
+    description: Endpoints d'authentification et gestion de sessions
+  - name: Users
+    description: Gestion des profils utilisateurs
+  - name: Accounts
+    description: Gestion des comptes bancaires et portefeuilles
+  - name: Transactions
+    description: Opérations de transactions financières
+  - name: Budgets
+    description: Création et suivi de budgets personnalisés
+  - name: Sols
+    description: Gestion des sols/tontines traditionnels haïtiens
+  - name: Debts
+    description: Suivi des dettes et créances
+  - name: Investments
+    description: Gestion des investissements
+  - name: Notifications
+    description: Système de notifications temps réel
+  - name: AI
+    description: Intelligence artificielle et analyses prédictives
+
+# ============================================================================
+# COMPOSANTS RÉUTILISABLES
+# ============================================================================
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token JWT obtenu après authentification
+
+  schemas:
+    # ========== SCHÉMAS COMMUNS ==========
+    Error:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Message d'erreur descriptif"
+        error:
+          type: string
+          example: "error_code"
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    Success:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+        data:
+          type: object
+        timestamp:
+          type: string
+          format: date-time
+
+    PaginationMeta:
+      type: object
+      properties:
+        currentPage:
+          type: integer
+          example: 1
+        totalPages:
+          type: integer
+          example: 5
+        totalItems:
+          type: integer
+          example: 48
+        itemsPerPage:
+          type: integer
+          example: 10
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+
+    # ========== USER ==========
+    User:
+      type: object
+      required:
+        - firstName
+        - lastName
+        - email
+      properties:
+        _id:
+          type: string
+          example: "507f1f77bcf86cd799439011"
+        firstName:
+          type: string
+          example: "Jean"
+        lastName:
+          type: string
+          example: "Baptiste"
+        email:
+          type: string
+          format: email
+          example: "jean.baptiste@example.com"
+        phone:
+          type: string
+          example: "+50937654321"
+        role:
+          type: string
+          enum: [user, admin]
+          default: user
+        isVerified:
+          type: boolean
+          default: false
+        isActive:
+          type: boolean
+          default: true
+        preferences:
+          type: object
+          properties:
+            currency:
+              type: string
+              enum: [HTG, USD]
+              default: HTG
+            language:
+              type: string
+              enum: [fr, en, ht]
+              default: fr
+            notifications:
+              type: object
+              properties:
+                email:
+                  type: boolean
+                push:
+                  type: boolean
+                sms:
+                  type: boolean
+        location:
+          type: object
+          properties:
+            city:
+              type: string
+            region:
+              type: string
+            country:
+              type: string
+              default: "Haiti"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    # ========== ACCOUNT ==========
+    Account:
+      type: object
+      required:
+        - name
+        - type
+        - currency
+      properties:
+        _id:
+          type: string
+        user:
+          type: string
+          description: User ID
+        name:
+          type: string
+          example: "Compte Courant BUH"
+        type:
+          type: string
+          enum: [courant, epargne, moncash, natcash, cash]
+        currency:
+          type: string
+          enum: [HTG, USD]
+        currentBalance:
+          type: number
+          format: double
+          example: 25000.50
+        availableBalance:
+          type: number
+          format: double
+        accountNumber:
+          type: string
+          example: "1234567890"
+        bankInfo:
+          type: object
+          properties:
+            bankName:
+              type: string
+              example: "Banque de l'Union Haïtienne"
+            bankCode:
+              type: string
+              example: "BUH"
+            branch:
+              type: string
+        isActive:
+          type: boolean
+          default: true
+        isDefault:
+          type: boolean
+          default: false
+        createdAt:
+          type: string
+          format: date-time
+
+    # ========== TRANSACTION ==========
+    Transaction:
+      type: object
+      required:
+        - account
+        - type
+        - amount
+        - category
+      properties:
+        _id:
+          type: string
+        user:
+          type: string
+        account:
+          type: string
+          description: Account ID
+        type:
+          type: string
+          enum: [income, expense, transfer]
+        amount:
+          type: number
+          format: double
+          example: 500.00
+        currency:
+          type: string
+          enum: [HTG, USD]
+          default: HTG
+        category:
+          type: string
+          enum: [
+            alimentation, transport, logement, santé, éducation,
+            divertissement, services, carburant, électricité,
+            eau, internet, téléphone, autre
+          ]
+        description:
+          type: string
+          maxLength: 500
+        date:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          items:
+            type: string
+        location:
+          type: object
+          properties:
+            name:
+              type: string
+            latitude:
+              type: number
+            longitude:
+              type: number
+        receipt:
+          type: object
+          properties:
+            url:
+              type: string
+            filename:
+              type: string
+        toAccountId:
+          type: string
+          description: Pour les transferts uniquement
+        status:
+          type: string
+          enum: [pending, completed, cancelled]
+          default: completed
+        createdAt:
+          type: string
+          format: date-time
+
+    # ========== BUDGET ==========
+    Budget:
+      type: object
+      required:
+        - name
+        - category
+        - amount
+        - period
+      properties:
+        _id:
+          type: string
+        user:
+          type: string
+        name:
+          type: string
+          example: "Budget Alimentation Mars"
+        category:
+          type: string
+        amount:
+          type: number
+          format: double
+          example: 15000.00
+        spent:
+          type: number
+          format: double
+          example: 8500.00
+        remaining:
+          type: number
+          format: double
+        currency:
+          type: string
+          enum: [HTG, USD]
+        period:
+          type: string
+          enum: [weekly, monthly, yearly]
+        startDate:
+          type: string
+          format: date-time
+        endDate:
+          type: string
+          format: date-time
+        alertThreshold:
+          type: number
+          minimum: 50
+          maximum: 100
+          default: 90
+          description: "Pourcentage pour déclencher alerte (ex: 90 = alerte à 90%)"
+        isActive:
+          type: boolean
+          default: true
+        createdAt:
+          type: string
+          format: date-time
+
+    # ========== SOL ==========
+    Sol:
+      type: object
+      required:
+        - name
+        - contributionAmount
+        - frequency
+      properties:
+        _id:
+          type: string
+        user:
+          type: string
+          description: Créateur du sol
+        name:
+          type: string
+          example: "Sol Famille Baptiste"
+        description:
+          type: string
+        contributionAmount:
+          type: number
+          format: double
+          example: 5000.00
+        currency:
+          type: string
+          enum: [HTG, USD]
+        frequency:
+          type: string
+          enum: [weekly, biweekly, monthly]
+        totalAmount:
+          type: number
+          description: "Montant total par tour (contributionAmount × nombre participants)"
+        participants:
+          type: array
+          items:
+            type: object
+            properties:
+              user:
+                type: string
+              name:
+                type: string
+              position:
+                type: integer
+              hasPaid:
+                type: boolean
+              paidAmount:
+                type: number
+        currentTurn:
+          type: integer
+          example: 3
+        status:
+          type: string
+          enum: [draft, recruiting, active, completed, cancelled, paused]
+        startDate:
+          type: string
+          format: date-time
+        nextPaymentDate:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    # ========== DEBT ==========
+    Debt:
+      type: object
+      required:
+        - type
+        - contact
+        - amount
+      properties:
+        _id:
+          type: string
+        user:
+          type: string
+        type:
+          type: string
+          enum: [debt, loan]
+          description: "debt = vous devez, loan = on vous doit"
+        contact:
+          type: object
+          required:
+            - name
+          properties:
+            name:
+              type: string
+            phone:
+              type: string
+            email:
+              type: string
+        amount:
+          type: number
+          format: double
+          example: 10000.00
+        amountPaid:
+          type: number
+          format: double
+          default: 0
+        amountRemaining:
+          type: number
+          format: double
+        currency:
+          type: string
+          enum: [HTG, USD]
+        description:
+          type: string
+        dueDate:
+          type: string
+          format: date-time
+        priority:
+          type: string
+          enum: [low, medium, high, urgent]
+        status:
+          type: string
+          enum: [active, partially_paid, paid, overdue, cancelled]
+        paymentHistory:
+          type: array
+          items:
+            type: object
+            properties:
+              amount:
+                type: number
+              date:
+                type: string
+                format: date-time
+              notes:
+                type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    # ========== NOTIFICATION ==========
+    Notification:
+      type: object
+      properties:
+        _id:
+          type: string
+        user:
+          type: string
+        source:
+          type: string
+          enum: [
+            ai_advice, ai_anomaly, ai_prediction, budget_alert,
+            sol_reminder, sol_turn, debt_reminder, transaction, account, system
+          ]
+        type:
+          type: string
+          enum: [info, success, warning, error, urgent]
+        title:
+          type: string
+          maxLength: 200
+        message:
+          type: string
+          maxLength: 500
+        priority:
+          type: string
+          enum: [low, medium, high, urgent]
+        actionable:
+          type: boolean
+        actionUrl:
+          type: string
+        actionLabel:
+          type: string
+        status:
+          type: string
+          enum: [pending, sent, delivered, read, acted, dismissed, failed]
+        readAt:
+          type: string
+          format: date-time
+        actedAt:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+
+  # ========== PARAMÈTRES COMMUNS ==========
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      description: Numéro de page
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+
+    LimitParam:
+      name: limit
+      in: query
+      description: Nombre d'éléments par page
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    SortParam:
+      name: sort
+      in: query
+      description: Ordre de tri
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: desc
+
+    SortByParam:
+      name: sortBy
+      in: query
+      description: Champ de tri
+      schema:
+        type: string
+        default: createdAt
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+paths:
+  # ==========================================================================
+  # AUTHENTICATION
+  # ==========================================================================
+  /auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Inscription d'un nouvel utilisateur
+      description: Créer un nouveau compte utilisateur
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - firstName
+                - lastName
+                - email
+                - password
+              properties:
+                firstName:
+                  type: string
+                  example: "Jean"
+                lastName:
+                  type: string
+                  example: "Baptiste"
+                email:
+                  type: string
+                  format: email
+                  example: "jean.baptiste@example.com"
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  description: "Doit contenir au moins une majuscule, une minuscule et un chiffre"
+                  example: "Password123"
+                phone:
+                  type: string
+                  example: "+50937654321"
+      responses:
+        '201':
+          description: Inscription réussie
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user:
+                            $ref: '#/components/schemas/User'
+                          tokens:
+                            type: object
+                            properties:
+                              accessToken:
+                                type: string
+                              refreshToken:
+                                type: string
+        '400':
+          description: Données invalides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Connexion utilisateur
+      description: Authentifier un utilisateur et obtenir des tokens JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "jean.baptiste@example.com"
+                password:
+                  type: string
+                  format: password
+                  example: "Password123"
+      responses:
+        '200':
+          description: Connexion réussie
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user:
+                            $ref: '#/components/schemas/User'
+                          tokens:
+                            type: object
+                            properties:
+                              accessToken:
+                                type: string
+                              refreshToken:
+                                type: string
+                          session:
+                            type: object
+                            properties:
+                              sessionId:
+                                type: string
+                              expiresAt:
+                                type: string
+                                format: date-time
+        '401':
+          description: Identifiants incorrects
+        '429':
+          description: Trop de tentatives de connexion
+
+  /auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Déconnexion
+      description: Déconnecter l'utilisateur de la session actuelle
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Déconnexion réussie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '401':
+          description: Non authentifié
+
+  /auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Renouveler le token d'accès
+      description: Obtenir un nouveau token d'accès avec le refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Token renouvelé
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accessToken:
+                            type: string
+                          refreshToken:
+                            type: string
+        '401':
+          description: Refresh token invalide
+
+  /auth/me:
+    get:
+      tags:
+        - Authentication
+      summary: Obtenir les informations de l'utilisateur connecté
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Informations utilisateur
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user:
+                            $ref: '#/components/schemas/User'
+
+  # ==========================================================================
+  # ACCOUNTS
+  # ==========================================================================
+  /accounts:
+    get:
+      tags:
+        - Accounts
+      summary: Liste des comptes
+      description: Récupérer tous les comptes de l'utilisateur connecté
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [courant, epargne, moncash, natcash, cash]
+        - name: currency
+          in: query
+          schema:
+            type: string
+            enum: [HTG, USD]
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Liste des comptes récupérée
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          accounts:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Account'
+                          summary:
+                            type: object
+                            properties:
+                              totalBalance:
+                                type: number
+                              totalAccounts:
+                                type: integer
+                              byType:
+                                type: object
+                              byCurrency:
+                                type: object
+
+    post:
+      tags:
+        - Accounts
+      summary: Créer un compte
+      description: Créer un nouveau compte bancaire ou portefeuille
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - type
+                - currency
+              properties:
+                name:
+                  type: string
+                  example: "Compte Courant BUH"
+                type:
+                  type: string
+                  enum: [courant, epargne, moncash, natcash, cash]
+                currency:
+                  type: string
+                  enum: [HTG, USD]
+                balance:
+                  type: number
+                  default: 0
+                description:
+                  type: string
+                accountNumber:
+                  type: string
+                bankInfo:
+                  type: object
+                  properties:
+                    bankName:
+                      type: string
+                    bankCode:
+                      type: string
+                    branch:
+                      type: string
+      responses:
+        '201':
+          description: Compte créé avec succès
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          account:
+                            $ref: '#/components/schemas/Account'
+
+  /accounts/{accountId}:
+    get:
+      tags:
+        - Accounts
+      summary: Détails d'un compte
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Détails du compte
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          account:
+                            $ref: '#/components/schemas/Account'
+
+    put:
+      tags:
+        - Accounts
+      summary: Modifier un compte
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                type:
+                  type: string
+                description:
+                  type: string
+      responses:
+        '200':
+          description: Compte modifié
+
+    delete:
+      tags:
+        - Accounts
+      summary: Supprimer un compte
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compte supprimé
+
+  # ==========================================================================
+  # TRANSACTIONS
+  # ==========================================================================
+  /transactions:
+    get:
+      tags:
+        - Transactions
+      summary: Liste des transactions
+      description: Récupérer les transactions avec filtres et pagination
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: accountId
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [income, expense, transfer]
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Liste des transactions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          transactions:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Transaction'
+                          pagination:
+                            $ref: '#/components/schemas/PaginationMeta'
+                          summary:
+                            type: object
+                            properties:
+                              totalIncome:
+                                type: number
+                              totalExpenses:
+                                type: number
+                              netAmount:
+                                type: number
+
+    post:
+      tags:
+        - Transactions
+      summary: Créer une transaction
+      description: Enregistrer une nouvelle transaction
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - accountId
+                - type
+                - amount
+                - category
+              properties:
+                accountId:
+                  type: string
+                type:
+                  type: string
+                  enum: [income, expense, transfer]
+                amount:
+                  type: number
+                  example: 500.00
+                currency:
+                  type: string
+                  enum: [HTG, USD]
+                category:
+                  type: string
+                description:
+                  type: string
+                date:
+                  type: string
+                  format: date-time
+                tags:
+                  type: array
+                  items:
+                    type: string
+                toAccountId:
+                  type: string
+                  description: "Requis si type=transfer"
+      responses:
+        '201':
+          description: Transaction créée
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          transaction:
+                            $ref: '#/components/schemas/Transaction'
+
+  /transactions/{transactionId}:
+    get:
+      tags:
+        - Transactions
+      summary: Détails d'une transaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Détails de la transaction
+
+    put:
+      tags:
+        - Transactions
+      summary: Modifier une transaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category:
+                  type: string
+                description:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Transaction modifiée
+
+    delete:
+      tags:
+        - Transactions
+      summary: Supprimer une transaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transaction supprimée
+
+  # ==========================================================================
+  # BUDGETS
+  # ==========================================================================
+  /budgets:
+    get:
+      tags:
+        - Budgets
+      summary: Liste des budgets
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [weekly, monthly, yearly]
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Liste des budgets
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          budgets:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Budget'
+
+    post:
+      tags:
+        - Budgets
+      summary: Créer un budget
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - category
+                - amount
+                - period
+              properties:
+                name:
+                  type: string
+                  example: "Budget Alimentation Mars"
+                category:
+                  type: string
+                amount:
+                  type: number
+                  example: 15000.00
+                currency:
+                  type: string
+                  enum: [HTG, USD]
+                period:
+                  type: string
+                  enum: [weekly, monthly, yearly]
+                startDate:
+                  type: string
+                  format: date-time
+                alertThreshold:
+                  type: number
+                  minimum: 50
+                  maximum: 100
+      responses:
+        '201':
+          description: Budget créé
+
+  /budgets/{budgetId}:
+    get:
+      tags:
+        - Budgets
+      summary: Détails d'un budget
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: budgetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Détails du budget
+
+    put:
+      tags:
+        - Budgets
+      summary: Modifier un budget
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: budgetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Budget modifié
+
+    delete:
+      tags:
+        - Budgets
+      summary: Supprimer un budget
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: budgetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Budget supprimé
+
+  /budgets/analytics/progress:
+    get:
+      tags:
+        - Budgets
+      summary: Analytics de progression des budgets
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Analytics des budgets
+
+  /budgets/alerts:
+    get:
+      tags:
+        - Budgets
+      summary: Budgets nécessitant attention
+      description: Liste des budgets qui dépassent le seuil d'alerte
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Alertes budgets
+
+  # ==========================================================================
+  # SOLS (TONTINES)
+  # ==========================================================================
+  /sols:
+    get:
+      tags:
+        - Sols
+      summary: Liste des sols
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, recruiting, active, completed, cancelled]
+      responses:
+        '200':
+          description: Liste des sols
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sols:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Sol'
+
+    post:
+      tags:
+        - Sols
+      summary: Créer un sol
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - contributionAmount
+                - frequency
+              properties:
+                name:
+                  type: string
+                  example: "Sol Famille Baptiste"
+                description:
+                  type: string
+                contributionAmount:
+                  type: number
+                  example: 5000.00
+                currency:
+                  type: string
+                  enum: [HTG, USD]
+                frequency:
+                  type: string
+                  enum: [weekly, biweekly, monthly]
+                startDate:
+                  type: string
+                  format: date-time
+      responses:
+        '201':
+          description: Sol créé
+
+  /sols/{solId}:
+    get:
+      tags:
+        - Sols
+      summary: Détails d'un sol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: solId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Détails du sol
+
+    put:
+      tags:
+        - Sols
+      summary: Modifier un sol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: solId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sol modifié
+
+    delete:
+      tags:
+        - Sols
+      summary: Annuler un sol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: solId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sol annulé
+
+  /sols/join:
+    post:
+      tags:
+        - Sols
+      summary: Rejoindre un sol
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - solId
+              properties:
+                solId:
+                  type: string
+                position:
+                  type: integer
+      responses:
+        '200':
+          description: Sol rejoint
+
+  /sols/{solId}/payment:
+    post:
+      tags:
+        - Sols
+      summary: Enregistrer un paiement sol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: solId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+              properties:
+                amount:
+                  type: number
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Paiement enregistré
+
+  # ==========================================================================
+  # DEBTS
+  # ==========================================================================
+  /debts:
+    get:
+      tags:
+        - Debts
+      summary: Liste des dettes/créances
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [debt, loan]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, partially_paid, paid, overdue, cancelled]
+      responses:
+        '200':
+          description: Liste des dettes
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          debts:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Debt'
+
+    post:
+      tags:
+        - Debts
+      summary: Créer une dette/créance
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - type
+                - contact
+                - amount
+              properties:
+                type:
+                  type: string
+                  enum: [debt, loan]
+                contact:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    phone:
+                      type: string
+                    email:
+                      type: string
+                amount:
+                  type: number
+                currency:
+                  type: string
+                  enum: [HTG, USD]
+                description:
+                  type: string
+                dueDate:
+                  type: string
+                  format: date-time
+                priority:
+                  type: string
+                  enum: [low, medium, high, urgent]
+      responses:
+        '201':
+          description: Dette/créance créée
+
+  /debts/{debtId}/payment:
+    post:
+      tags:
+        - Debts
+      summary: Enregistrer un paiement
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: debtId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+              properties:
+                amount:
+                  type: number
+                date:
+                  type: string
+                  format: date-time
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Paiement enregistré
+
+  # ==========================================================================
+  # NOTIFICATIONS
+  # ==========================================================================
+  /notifications:
+    get:
+      tags:
+        - Notifications
+      summary: Liste des notifications
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [info, success, warning, error, urgent]
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high, urgent]
+        - name: isRead
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Liste des notifications
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          notifications:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Notification'
+                          pagination:
+                            $ref: '#/components/schemas/PaginationMeta'
+
+  /notifications/unread:
+    get:
+      tags:
+        - Notifications
+      summary: Notifications non lues
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Notifications non lues
+
+  /notifications/stats:
+    get:
+      tags:
+        - Notifications
+      summary: Statistiques des notifications
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Statistiques
+
+  /notifications/read-all:
+    put:
+      tags:
+        - Notifications
+      summary: Marquer toutes comme lues
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Toutes les notifications marquées comme lues
+
+  /notifications/{notificationId}/read:
+    put:
+      tags:
+        - Notifications
+      summary: Marquer comme lue
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification marquée comme lue
+
+  # ==========================================================================
+  # AI (INTELLIGENCE ARTIFICIELLE)
+  # ==========================================================================
+  /ai/status:
+    get:
+      tags:
+        - AI
+      summary: Statut du système IA
+      description: Vérifier l'état de santé du système d'intelligence artificielle
+      responses:
+        '200':
+          description: Statut du système IA
+
+  /ai/analysis/personal:
+    get:
+      tags:
+        - AI
+      summary: Analyse personnelle complète
+      description: Analyse financière personnalisée basée sur l'IA
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 90
+            description: Nombre de jours à analyser
+      responses:
+        '200':
+          description: Analyse personnelle générée
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          spendingPatterns:
+                            type: object
+                          recommendations:
+                            type: array
+                            items:
+                              type: object
+                          insights:
+                            type: array
+
+  /ai/anomalies:
+    get:
+      tags:
+        - AI
+      summary: Détection d'anomalies
+      description: Détecter les transactions ou patterns anormaux
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 90
+      responses:
+        '200':
+          description: Anomalies détectées
+
+  /ai/health:
+    get:
+      tags:
+        - AI
+      summary: Score de santé financière
+      description: Calculer le score de santé financière globale
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Score de santé calculé
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          score:
+                            type: number
+                            example: 75
+                          rating:
+                            type: string
+                            enum: [excellent, good, fair, poor]
+                          factors:
+                            type: object
+
+  /ai/predictions/expenses:
+    get:
+      tags:
+        - AI
+      summary: Prédiction des dépenses futures
+      description: Prédire les dépenses pour les mois à venir
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: months
+          in: query
+          schema:
+            type: integer
+            default: 3
+            minimum: 1
+            maximum: 12
+      responses:
+        '200':
+          description: Prédictions générées
+
+  /ai/advice/generate:
+    post:
+      tags:
+        - AI
+      summary: Générer des conseils personnalisés
+      description: Générer des conseils financiers basés sur l'IA
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 90
+      responses:
+        '200':
+          description: Conseils générés
+
+  /ai/habits:
+    get:
+      tags:
+        - AI
+      summary: Habitudes financières détectées
+      description: Identifier les patterns et habitudes de dépense
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 90
+      responses:
+        '200':
+          description: Habitudes identifiées

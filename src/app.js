@@ -146,6 +146,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Environnement: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🚀 URL: http://localhost:${PORT}`);
   console.log(`🚀 Health: http://localhost:${PORT}/api/health`);
+  console.log(`🚀 Info: http://localhost:${PORT}/api`);
   console.log('🚀 ================================');
 });
 

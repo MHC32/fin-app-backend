@@ -332,6 +332,7 @@ const register = async (req, res) => {
         user: result.user,
         tokens: {
           accessToken: result.tokens.accessToken,
+          refreshToken: result.tokens.refreshToken,
           tokenType: result.tokens.tokenType,
           expiresIn: result.tokens.expiresIn
         },
@@ -395,6 +396,7 @@ const login = async (req, res) => {
         user: result.user,
         tokens: {
           accessToken: result.tokens.accessToken,
+          refreshToken: result.tokens.refreshToken,
           tokenType: result.tokens.tokenType,
           expiresIn: result.tokens.expiresIn
         },
